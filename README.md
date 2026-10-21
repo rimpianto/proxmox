@@ -1,7 +1,7 @@
 # Proxmox VE helper scripts
 
 Small, opinionated **fish** scripts used to operate standalone Proxmox VE hosts:
-rename a node, stop or upgrade a host safely, and take a network inventory.
+rename a node, stop or upgrade a host safely, and take network and NVMe inventories.
 
 Tested on Proxmox VE 9.x (Debian 13) with `fish` 3.7+/4.x. They are written for the
 author's homelab (paths, CT IDs and storage names may need adapting) — read the script
@@ -16,6 +16,7 @@ before running it on your own host.
 | [`stop_all_noBackup.fish`](scripts/stop_all_noBackup.fish) | Same shutdown sequence **without** the backup | yes (shutdown) |
 | [`upgrade_and_reboot-host.ver1.3.0.fish`](scripts/upgrade_and_reboot-host.ver1.3.0.fish) | `apt update` + `full-upgrade` + `autoremove`; if a reboot is required, shut the guests down and reboot | yes |
 | [`net-inventory.fish`](scripts/net-inventory.fish) | Read-only inventory of NICs: driver, PCI, speed, media, MTU, master/bridge, IPs, PCIe link | **no** |
+| [`nvme-inventory.fish`](scripts/nvme-inventory.fish) | Read-only inventory of NVMe drives: model, capacity, PCIe link/gen, SMART health, endurance, who uses them | **no** |
 
 Requirements: `root` (except `net-inventory.fish`), `fish`, and the usual Proxmox CLI
 tools (`pct`, `qm`, `vzdump`, `pvesh`) already present on a PVE host.
@@ -143,6 +144,39 @@ report media (e.g. `ice` without an SFP module).
 
 `-d/--detail IFACE` adds `ethtool -i` (driver/firmware), supported and advertised link
 modes, SFP diagnostics (`ethtool -m`), error counters and `ip addr`.
+
+## nvme-inventory.fish
+
+Read-only report of every NVMe controller/namespace: **it changes nothing** and works as
+a normal user.
+
+```sh
+nvme-inventory                # table
+nvme-inventory -d nvme1n1     # full detail for one namespace
+nvme-inventory --no-color     # no ANSI colours
+```
+
+| Column | Content |
+|---|---|
+| `DEVICE` | namespace block device (`nvme0n1`, …) |
+| `MODEL` | model string from the drive's identify data |
+| `SIZE` | namespace capacity |
+| `PCIe` | controller `LnkCap` (capability) → `LnkSta` (negotiated), with generation (`Gen3`, `Gen4`, …) |
+| `HEALTH` | SMART self-assessment (`PASSED` / `FAILED`) |
+| `TEMP` | composite temperature, °C |
+| `USED%` | `Percentage Used` from the NVMe SMART log (endurance) |
+| `USED BY` | `zfs: <pool>`, `mounted <path>`, `<fs> (not mounted)`, `partitions only` or `unused` |
+
+`⚠ speed` / `⚠ width` mean the drive is running below the link it supports — typically a
+Gen4 SSD in a Gen3 slot or a x4 drive in a x2/x1 slot. The summary line counts
+controllers, total capacity, downgraded links and unhealthy drives.
+
+`-d/--detail DEVICE` adds the controller and root port, the serial number, the `lsblk`
+tree, `smartctl -i` and the full SMART health/attributes block (data written, power-on
+hours, unsafe shutdowns, media errors).
+
+Dependencies: `pciutils`, `smartmontools`, `util-linux` (`lsblk`); `zfsutils-linux` for
+the pool mapping (optional).
 
 ---
 
