@@ -1,7 +1,11 @@
 # Proxmox VE helper scripts
 
-Small, opinionated **fish** scripts used to operate standalone Proxmox VE hosts:
-rename a node, stop or upgrade a host safely, and take network and NVMe inventories.
+Small, opinionated **fish** scripts used to operate and audit standalone
+Proxmox VE hosts: rename a node, stop or upgrade a host safely, inspect
+sessions and access logs, and take network and NVMe inventories.
+
+**New here?** See [Getting started](docs/getting-started.md) for cloning,
+updating a local checkout and contributing new files.
 
 Tested on Proxmox VE 9.x (Debian 13) with `fish` 3.7+/4.x. They are written for the
 author's homelab (paths, CT IDs and storage names may need adapting) — read the script
@@ -17,6 +21,7 @@ before running it on your own host.
 | [`upgrade_and_reboot-host.ver1.3.0.fish`](scripts/upgrade_and_reboot-host.ver1.3.0.fish) | `apt update` + `full-upgrade` + `autoremove`; if a reboot is required, shut the guests down and reboot | yes |
 | [`net-inventory.fish`](scripts/net-inventory.fish) | Read-only inventory of NICs: driver, PCI, speed, media, MTU, master/bridge, IPs, PCIe link | **no** |
 | [`nvme-inventory.fish`](scripts/nvme-inventory.fish) | Read-only inventory of NVMe drives: model, capacity, PCIe link/gen, SMART health, endurance, who uses them | **no** |
+| [`proxmox_audit-ver01A.fish`](scripts/proxmox_audit-ver01A.fish) | Interactive menu for sessions, SSH/GUI login history, ports, processes, cron and rootkit scanners | no configuration changes; scanners may write logs |
 
 Requirements: `root` (except `net-inventory.fish`), `fish`, and the usual Proxmox CLI
 tools (`pct`, `qm`, `vzdump`, `pvesh`) already present on a PVE host.
@@ -177,6 +182,30 @@ hours, unsafe shutdowns, media errors).
 
 Dependencies: `pciutils`, `smartmontools`, `util-linux` (`lsblk`); `zfsutils-linux` for
 the pool mapping (optional).
+
+---
+
+## proxmox_audit-ver01A.fish
+
+Interactive Fish menu for routine host security inspection. It groups current
+users and login sessions, successful/failed SSH and Proxmox GUI logins,
+listening ports and established connections, process lookup, root cron files,
+`chkrootkit` and `rkhunter`.
+
+```sh
+apt install -y fish ccze less iproute2 procps chkrootkit rkhunter
+chmod +x scripts/proxmox_audit-ver01A.fish
+./scripts/proxmox_audit-ver01A.fish
+```
+
+Select entries 1–14 with the keyboard; use `q` to leave a `less` journal view
+or the main menu. The script has no command-line options and requires an
+interactive terminal. It does not intentionally change Proxmox configuration,
+but the rootkit scanners can write their own logs and state. Scanner warnings
+need manual review and are not proof of compromise.
+
+See the [complete audit-menu manual](docs/proxmox-audit.md) for every entry,
+terminal behaviour, remote `tmux` usage, output and limitations.
 
 ---
 
