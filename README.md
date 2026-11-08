@@ -230,9 +230,10 @@ What it does, in order:
 1. looks up the service in the built-in registry (CT id, compose path, image repo);
 2. with no `<new-tag>`, prints the current image line and exits (read-only);
 3. backs up the compose file (`.bak-<timestamp>`);
-4. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
-5. runs `docker compose config -q && docker compose pull && docker compose up -d`;
-6. prints the container status.
+4. pre-pulls `repo:new-tag` to validate it exists — aborts leaving the compose untouched if the pull fails;
+5. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
+6. runs `docker compose config -q && docker compose up -d`;
+7. prints the container status.
 
 Services: `npm`, `adguard`, `unbound`, `postgres`, `odoo-web`, `odoo-db`,
 `soon-nginx`, `soon-mongo`, `soon-certbot`, `wud`.

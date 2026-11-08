@@ -77,7 +77,7 @@ end
 echo "[update] $repo -> $newtag"
 
 if test $dry -eq 1
-    echo "[dry] would: backup $compose, sed $repo:TAG -> $repo:$newtag, compose pull + up -d on CT $ct"
+    echo "[dry] would: backup $compose, docker pull $repo:$newtag, sed, compose up -d on CT $ct"
     exit 0
 end
 
@@ -89,20 +89,27 @@ if not pct exec $ct -- cp "$compose" "$compose.bak-$ts"
 end
 echo "[backup] $compose.bak-$ts"
 
-# 2. bump the tag (replace repo:TAG with repo:newtag, keeping any quotes)
+# 2. validate + pre-pull the new tag (fail BEFORE touching the compose)
+if not pct exec $ct -- docker pull "$repo:$newtag"
+    echo "[error] cannot pull $repo:$newtag (tag not found? certbot/adguard use a v prefix, e.g. v5.9.0)" >&2
+    echo "[error] compose left untouched" >&2
+    exit 1
+end
+
+# 3. bump the tag (replace repo:TAG with repo:newtag, keeping any quotes)
 if not pct exec $ct -- sed -i "s|$repo:[^ '\"]*|$repo:$newtag|" "$compose"
     echo "[error] sed failed" >&2
     exit 1
 end
 pct exec $ct -- grep -E "image:.*$repo:" "$compose"
 
-# 3. validate, pull, recreate
+# 4. recreate (image already pulled)
 set -l dir (path dirname "$compose")
-if not pct exec $ct -- bash -c "cd $dir && docker compose config -q && docker compose pull && docker compose up -d"
+if not pct exec $ct -- bash -c "cd $dir && docker compose config -q && docker compose up -d"
     echo "[error] compose up failed (restore: cp $compose.bak-$ts $compose)" >&2
     exit 1
 end
 
-# 4. status
+# 5. status
 sleep 3
 pct exec $ct -- docker ps --format '{{.Names}}|{{.Image}}|{{.Status}}'
