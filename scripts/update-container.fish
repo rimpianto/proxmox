@@ -6,7 +6,7 @@
 #   fish update-container.fish <service> <new-tag>    # bump + recreate
 #   fish update-container.fish <service> <new-tag> --dry   # dry run
 
-set -g VERSION "1.4.4"
+set -g VERSION "1.5.1"
 
 function service_info
     # echo "CT compose-path repo container-name"
@@ -38,6 +38,7 @@ end
 
 function usage
     echo "usage: update-container.fish <service> [<new-tag>] [--dry]"
+    echo "       update-container.fish list                # table: LXC / container / version / update"
     echo "services: npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud"
 end
 
@@ -61,6 +62,31 @@ function wud_suggest
     return 0
 end
 
+function list_all
+    # table of every service: LXC (CT) / container / current tag / available / diff kind
+    set -l services npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud
+    set -l passfile /root/.wud-admin-pass
+    if not test -f $passfile
+        echo "[error] /root/.wud-admin-pass missing — create it to enable the list (needs WUD API)"
+        return 1
+    end
+    set -l pass (cat $passfile | string trim)
+    set -l json (curl -s -m 6 -u "admin:$pass" "http://192.168.100.107:3000/api/containers" 2>/dev/null)
+    if test -z "$json"
+        echo "[error] WUD unreachable"
+        return 1
+    end
+    printf "%-13s %-4s %-20s %-20s %-20s %s\n" SERVICE CT CONTAINER CURRENT AVAILABLE KIND
+    for svc in $services
+        set -l fields (service_info $svc | string split " ")
+        set -l ct $fields[1]
+        set -l cname $fields[4]
+        set -l row (printf "%s" "$json" | env CNAME="$cname" python3 -c 'import sys,json,os; d=json.load(sys.stdin); n=os.environ["CNAME"]; r=[c for c in d if c.get("name")==n]; c=r[0] if r else None; cur=c["image"]["tag"]["value"] if c else "?"; up=bool(c and c.get("updateAvailable") and c.get("result") and c["result"].get("tag")); avail=(c["result"]["tag"] if up else "-"); kind=((c.get("updateKind") or {}).get("semverDiff") if up else "-"); print(cur+"|"+avail+"|"+kind)' 2>/dev/null)
+        set -l parts (string split "|" $row)
+        printf "%-13s %-4s %-20s %-20s %-20s %s\n" $svc $ct $cname $parts[1] $parts[2] $parts[3]
+    end
+end
+
 if test "$argv[1]" = "--version"; or test "$argv[1]" = "-V"
     echo "update-container.fish v$VERSION"
     exit 0
@@ -69,6 +95,12 @@ end
 if test "$argv[1]" = "--help"; or test "$argv[1]" = "-h"
     echo "update-container.fish v$VERSION"
     usage
+    exit 0
+end
+
+if test "$argv[1]" = "list"; or test "$argv[1]" = "ls"
+    echo "[update-container.fish v$VERSION]"
+    list_all
     exit 0
 end
 
@@ -113,7 +145,13 @@ if test -z "$newtag"
         set -l tag $parts[1]
         set -l diff $parts[2]
         echo "[available] $repo:$tag  ($diff)"
-        echo "[suggested] update-container.fish $svc $tag"
+        if test "$diff" = "major"
+            echo "[warning] major jump — do NOT update in one step (incremental upgrade required, e.g. mongo 7->8->9)"
+        else if test "$diff" = "prerelease"
+            echo "[note] prerelease/variant — not a real version update, skip"
+        else
+            echo "[suggested] update-container.fish $svc $tag"
+        end
     else
         echo "[available] none (up to date, or WUD unreachable — create /root/.wud-admin-pass)"
     end
