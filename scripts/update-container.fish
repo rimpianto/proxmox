@@ -6,7 +6,7 @@
 #   fish update-container.fish <service> <new-tag>    # bump + recreate
 #   fish update-container.fish <service> <new-tag> --dry   # dry run
 
-set -g VERSION "1.4.0"
+set -g VERSION "1.4.1"
 
 function service_info
     switch $argv[1]
@@ -62,6 +62,12 @@ end
 
 if test "$argv[1]" = "--version"; or test "$argv[1]" = "-V"
     echo "update-container.fish v$VERSION"
+    exit 0
+end
+
+if test "$argv[1]" = "--help"; or test "$argv[1]" = "-h"
+    echo "update-container.fish v$VERSION"
+    usage
     exit 0
 end
 
