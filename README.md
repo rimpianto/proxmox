@@ -217,19 +217,22 @@ pinned image tag in a compose file and recreates the container. It is the manual
 counterpart to a report-only WUD setup (no auto-updates on a production host).
 
 ```sh
-fish update-container.fish <service> <new-tag> [--dry]
+fish update-container.fish <service>              # show the current pinned tag
+fish update-container.fish <service> <new-tag>    # bump + recreate
+fish update-container.fish <service> <new-tag> --dry
 # e.g.
-fish update-container.fish npm 2.17.0
-fish update-container.fish adguard v0.108.0 --dry
+fish update-container.fish npm                  # show npm's current tag
+fish update-container.fish npm 2.17.0           # update npm to 2.17.0
 ```
 
 What it does, in order:
 
 1. looks up the service in the built-in registry (CT id, compose path, image repo);
-2. backs up the compose file (`.bak-<timestamp>`);
-3. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
-4. runs `docker compose config -q && docker compose pull && docker compose up -d`;
-5. prints the container status.
+2. with no `<new-tag>`, prints the current image line and exits (read-only);
+3. backs up the compose file (`.bak-<timestamp>`);
+4. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
+5. runs `docker compose config -q && docker compose pull && docker compose up -d`;
+6. prints the container status.
 
 Services: `npm`, `adguard`, `unbound`, `postgres`, `odoo-web`, `odoo-db`,
 `soon-nginx`, `soon-mongo`, `soon-certbot`, `wud`.

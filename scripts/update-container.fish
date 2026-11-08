@@ -2,9 +2,9 @@
 # update-container.fish — bump a pinned image tag and recreate the container.
 # Runs on the PVE host (fribourg). Service registry is the switch below.
 # Usage:
-#   fish update-container.fish <service> <new-tag> [--dry]
-# Example:
-#   fish update-container.fish npm 2.16.0
+#   fish update-container.fish <service>              # show current tag
+#   fish update-container.fish <service> <new-tag>    # bump + recreate
+#   fish update-container.fish <service> <new-tag> --dry   # dry run
 
 function service_info
     switch $argv[1]
@@ -34,19 +34,25 @@ function service_info
 end
 
 function usage
-    echo "usage: update-container.fish <service> <new-tag> [--dry]"
+    echo "usage: update-container.fish <service> [<new-tag>] [--dry]"
     echo "services: npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud"
 end
 
-if test (count $argv) -lt 2
+if test (count $argv) -lt 1
     usage
     exit 2
 end
 
 set -l svc $argv[1]
-set -l newtag $argv[2]
+set -l newtag ""
 set -l dry 0
-if test (count $argv) -ge 3; and test "$argv[3]" = "--dry"
+if test (count $argv) -ge 2
+    set newtag $argv[2]
+end
+if test "$newtag" = "--dry"
+    set newtag ""
+    set dry 1
+else if test (count $argv) -ge 3; and test "$argv[3]" = "--dry"
     set dry 1
 end
 
@@ -60,7 +66,15 @@ set -l ct $fields[1]
 set -l compose $fields[2]
 set -l repo $fields[3]
 
-echo "[service] $svc  ct=$ct  compose=$compose  repo=$repo  ->  $newtag"
+echo "[service] $svc  ct=$ct  repo=$repo"
+
+# status query: no new tag given, just print the current image line
+if test -z "$newtag"
+    pct exec $ct -- grep -E "image:.*$repo:" "$compose"
+    exit 0
+end
+
+echo "[update] $repo -> $newtag"
 
 if test $dry -eq 1
     echo "[dry] would: backup $compose, sed $repo:TAG -> $repo:$newtag, compose pull + up -d on CT $ct"
@@ -69,11 +83,11 @@ end
 
 # 1. backup the compose file
 set -l ts (date +%F-%H%M)
-if not pct exec $ct -- cp "$compose" "{$compose}.bak-{$ts}"
+if not pct exec $ct -- cp "$compose" "$compose.bak-$ts"
     echo "[error] backup failed" >&2
     exit 1
 end
-echo "[backup] {$compose}.bak-{$ts}"
+echo "[backup] $compose.bak-$ts"
 
 # 2. bump the tag (replace repo:TAG with repo:newtag, keeping any quotes)
 if not pct exec $ct -- sed -i "s|$repo:[^ '\"]*|$repo:$newtag|" "$compose"
@@ -85,7 +99,7 @@ pct exec $ct -- grep -E "image:.*$repo:" "$compose"
 # 3. validate, pull, recreate
 set -l dir (path dirname "$compose")
 if not pct exec $ct -- bash -c "cd $dir && docker compose config -q && docker compose pull && docker compose up -d"
-    echo "[error] compose up failed (restore with: cp {$compose}.bak-{$ts} $compose)" >&2
+    echo "[error] compose up failed (restore: cp $compose.bak-$ts $compose)" >&2
     exit 1
 end
 
