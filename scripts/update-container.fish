@@ -2,34 +2,35 @@
 # update-container.fish — bump a pinned image tag and recreate the container.
 # Runs on the PVE host (fribourg). Service registry is the switch below.
 # Usage:
-#   fish update-container.fish <service>              # show current tag
+#   fish update-container.fish <service>              # show current tag + available update
 #   fish update-container.fish <service> <new-tag>    # bump + recreate
 #   fish update-container.fish <service> <new-tag> --dry   # dry run
 
-set -g VERSION "1.4.1"
+set -g VERSION "1.4.3"
 
 function service_info
+    # echo "CT compose-path repo container-name"
     switch $argv[1]
         case npm
-            echo "195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager"
+            echo "195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager nginx-app-1"
         case adguard
-            echo "253 /opt/adguardhome/docker-compose.yml adguard/adguardhome"
+            echo "253 /opt/adguardhome/docker-compose.yml adguard/adguardhome adguardhome"
         case unbound
-            echo "252 /opt/unbound/docker-compose.yml mvance/unbound"
+            echo "252 /opt/unbound/docker-compose.yml mvance/unbound unbound"
         case postgres
-            echo "210 /var/lib/docker/volumes/hawser_stacks/_data/pg/compose.yaml postgres"
+            echo "210 /var/lib/docker/volumes/hawser_stacks/_data/pg/compose.yaml postgres pg-db-1"
         case odoo-web
-            echo "202 /opt/odoo/docker-compose.yml odoo"
+            echo "202 /opt/odoo/docker-compose.yml odoo odoo-web"
         case odoo-db
-            echo "202 /opt/odoo/docker-compose.yml postgres"
+            echo "202 /opt/odoo/docker-compose.yml postgres odoo-db"
         case soon-nginx
-            echo "100 /opt/coming-soon/docker/docker-compose.yml nginx"
+            echo "100 /opt/coming-soon/docker/docker-compose.yml nginx coming-soon-nginx"
         case soon-mongo
-            echo "100 /opt/coming-soon/docker/docker-compose.yml mongo"
+            echo "100 /opt/coming-soon/docker/docker-compose.yml mongo coming-soon-mongo"
         case soon-certbot
-            echo "100 /opt/coming-soon/docker/docker-compose.yml certbot/certbot"
+            echo "100 /opt/coming-soon/docker/docker-compose.yml certbot/certbot coming-soon-certbot"
         case wud
-            echo "107 /opt/wud/docker-compose.yml getwud/wud"
+            echo "107 /opt/wud/docker-compose.yml getwud/wud wud"
         case '*'
             return 1
     end
@@ -41,8 +42,8 @@ function usage
 end
 
 function wud_suggest
-    # returns the newer tag WUD detected for $repo, or empty if unknown
-    set -l repo $argv[1]
+    # returns "newtag|diff" for the container named $argv[1], or empty if unknown
+    set -l cname $argv[1]
     set -l passfile /root/.wud-admin-pass
     if not test -f $passfile
         return 1
@@ -52,7 +53,7 @@ function wud_suggest
     if test -z "$json"
         return 1
     end
-    set -l target (printf "%s" "$json" | env REPO="$repo" python3 -c 'import sys,json,os; d=json.load(sys.stdin); r=[c for c in d if c.get("image",{}).get("name")==os.environ["REPO"]]; print((r[0]["result"]["tag"] if r and r[0].get("updateAvailable") and r[0].get("result") and r[0]["result"].get("tag") else ""))' 2>/dev/null)
+    set -l target (printf "%s" "$json" | env CNAME="$cname" python3 -c 'import sys,json,os; d=json.load(sys.stdin); n=os.environ["CNAME"]; r=[c for c in d if c.get("name")==n]; c=r[0] if r and r[0].get("updateAvailable") and r[0].get("result") and r[0]["result"].get("tag") else None; print((c["result"]["tag"]+"|"+((c.get("updateKind") or {}).get("semverDiff") or "?")) if c else "")' 2>/dev/null)
     if test -z "$target"
         return 1
     end
@@ -90,7 +91,7 @@ else if test (count $argv) -ge 3; and test "$argv[3]" = "--dry"
 end
 
 set -l fields (service_info $svc | string split " ")
-if test (count $fields) -lt 3
+if test (count $fields) -lt 4
     echo "unknown service: $svc" >&2
     usage
     exit 1
@@ -98,6 +99,7 @@ end
 set -l ct $fields[1]
 set -l compose $fields[2]
 set -l repo $fields[3]
+set -l cname $fields[4]
 
 echo "[update-container.fish v$VERSION] $svc  ct=$ct  repo=$repo"
 
@@ -105,10 +107,13 @@ echo "[update-container.fish v$VERSION] $svc  ct=$ct  repo=$repo"
 if test -z "$newtag"
     echo "[current]"
     pct exec $ct -- grep -E "image:.*$repo:" "$compose"
-    set -l target (wud_suggest $repo)
+    set -l target (wud_suggest $cname)
     if test -n "$target"
-        echo "[available] $repo:$target"
-        echo "[suggested] update-container.fish $svc $target"
+        set -l parts (string split "|" $target)
+        set -l tag $parts[1]
+        set -l diff $parts[2]
+        echo "[available] $repo:$tag  ($diff)"
+        echo "[suggested] update-container.fish $svc $tag"
     else
         echo "[available] none (up to date, or WUD unreachable — create /root/.wud-admin-pass)"
     end
