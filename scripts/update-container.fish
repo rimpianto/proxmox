@@ -38,6 +38,26 @@ function usage
     echo "services: npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud"
 end
 
+function wud_suggest
+    # returns the newer tag WUD detected for $repo, or empty if unknown
+    set -l repo $argv[1]
+    set -l passfile /root/.wud-admin-pass
+    if not test -f $passfile
+        return 1
+    end
+    set -l pass (cat $passfile | string trim)
+    set -l json (curl -s -m 6 -u "admin:$pass" "http://192.168.100.107:3000/api/containers" 2>/dev/null)
+    if test -z "$json"
+        return 1
+    end
+    set -l target (printf "%s" "$json" | env REPO="$repo" python3 -c 'import sys,json,os; d=json.load(sys.stdin); r=[c for c in d if c.get("image",{}).get("name")==os.environ["REPO"]]; print((r[0]["result"]["tag"] if r and r[0].get("updateAvailable") and r[0].get("result") and r[0]["result"].get("tag") else ""))' 2>/dev/null)
+    if test -z "$target"
+        return 1
+    end
+    echo $target
+    return 0
+end
+
 if test (count $argv) -lt 1
     usage
     exit 2
@@ -68,9 +88,17 @@ set -l repo $fields[3]
 
 echo "[service] $svc  ct=$ct  repo=$repo"
 
-# status query: no new tag given, just print the current image line
+# status query: no new tag given, show current tag + WUD's suggestion
 if test -z "$newtag"
+    echo "[current]"
     pct exec $ct -- grep -E "image:.*$repo:" "$compose"
+    set -l target (wud_suggest $repo)
+    if test -n "$target"
+        echo "[available] $repo:$target"
+        echo "[suggested] update-container.fish $svc $target"
+    else
+        echo "[available] none (up to date, or WUD unreachable — create /root/.wud-admin-pass)"
+    end
     exit 0
 end
 

@@ -228,7 +228,8 @@ fish update-container.fish npm 2.17.0           # update npm to 2.17.0
 What it does, in order:
 
 1. looks up the service in the built-in registry (CT id, compose path, image repo);
-2. with no `<new-tag>`, prints the current image line and exits (read-only);
+2. with no `<new-tag>`, prints the current image line, plus the newer tag WUD
+   suggests (read via `/root/.wud-admin-pass`), and the exact command to run;
 3. backs up the compose file (`.bak-<timestamp>`);
 4. pre-pulls `repo:new-tag` to validate it exists — aborts leaving the compose untouched if the pull fails;
 5. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
@@ -242,6 +243,9 @@ Notes:
 
 - **site-specific**: the registry maps service names to CT IDs and compose paths of
   the fribourg host (192.168.100.x) — adapt before reuse on another host;
+- the "available update" hint queries WUD at http://192.168.100.107:3000 using the
+  admin password from `/root/.wud-admin-pass` (chmod 600) — create that file to enable
+  the suggestion; without it the script only prints the current tag;
 - rollback = `cp compose.yaml.bak-* compose.yaml && docker compose up -d`;
 - `--dry` prints what would happen without touching anything.
 
