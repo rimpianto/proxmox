@@ -1,0 +1,21 @@
+# update-container.fish config — copy to /etc/update-container.conf on the PVE host
+# and adapt. Lines starting with # are ignored.
+#
+# Format of a service line (one per container to track):
+#   service  ct  compose-path  repo  container-name
+#
+#   service         short name you type after `update-container.fish`
+#   ct              LXC VMID the container runs in
+#   compose-path    full path INSIDE the CT to the compose file
+#   repo            image repository without the tag (e.g. nginx, postgres, jc21/nginx-proxy-manager)
+#   container-name  the Docker container name WUD tracks (see `docker ps --format '{{.Names}}'`)
+
+WUD_URL http://<WUD-IP>:3000
+
+# service  ct  compose-path  repo  container-name
+npm 195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager nginx-app-1
+adguard 253 /opt/adguardhome/docker-compose.yml adguard/adguardhome adguardhome
+
+# Only registry-based images go here. Exclude:
+#   - locally-built images (dated tags YYYY.MM.DD-<sig8>) — not updatable via registry
+#   - the hawser agent (ghcr.io/finsys/hawser) — it is the watcher itself

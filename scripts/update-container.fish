@@ -1,45 +1,35 @@
 #!/usr/bin/env fish
 # update-container.fish — bump a pinned image tag and recreate the container.
-# Runs on the PVE host (fribourg). Service registry is the switch below.
+# Portable across hosts: the WUD URL and the service registry live in
+# /etc/update-container.conf (one per host), so this single script works on
+# both fribourg (192.168.100.x) and dell7760 (192.168.97.x).
+#
 # Usage:
-#   fish update-container.fish <service>              # show current tag + available update
-#   fish update-container.fish <service> <new-tag>    # bump + recreate
-#   fish update-container.fish <service> <new-tag> --dry   # dry run
+#   update-container.fish list                 # table: LXC / container / version / update
+#   update-container.fish <service>            # show current tag + available update
+#   update-container.fish <service> <new-tag>  # bump + recreate
+#   update-container.fish <service> <new-tag> --dry
 
-set -g VERSION "1.5.1"
+set -g VERSION "1.6.0"
+set -g CONFIG /etc/update-container.conf
+
+function config_wud_url
+    awk '$1 == "WUD_URL" {print $2; exit}' $CONFIG
+end
 
 function service_info
-    # echo "CT compose-path repo container-name"
-    switch $argv[1]
-        case npm
-            echo "195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager nginx-app-1"
-        case adguard
-            echo "253 /opt/adguardhome/docker-compose.yml adguard/adguardhome adguardhome"
-        case unbound
-            echo "252 /opt/unbound/docker-compose.yml mvance/unbound unbound"
-        case postgres
-            echo "210 /var/lib/docker/volumes/hawser_stacks/_data/pg/compose.yaml postgres pg-db-1"
-        case odoo-web
-            echo "202 /opt/odoo/docker-compose.yml odoo odoo-web"
-        case odoo-db
-            echo "202 /opt/odoo/docker-compose.yml postgres odoo-db"
-        case soon-nginx
-            echo "100 /opt/coming-soon/docker/docker-compose.yml nginx coming-soon-nginx"
-        case soon-mongo
-            echo "100 /opt/coming-soon/docker/docker-compose.yml mongo coming-soon-mongo"
-        case soon-certbot
-            echo "100 /opt/coming-soon/docker/docker-compose.yml certbot/certbot coming-soon-certbot"
-        case wud
-            echo "107 /opt/wud/docker-compose.yml getwud/wud wud"
-        case '*'
-            return 1
-    end
+    # echo "ct compose-path repo container-name" for $argv[1]
+    awk -v s="$argv[1]" '$1 == s && NF >= 5 {print $2, $3, $4, $5}' $CONFIG
+end
+
+function all_services
+    awk 'NF >= 5 && $1 !~ /^#/ {print $1}' $CONFIG
 end
 
 function usage
     echo "usage: update-container.fish <service> [<new-tag>] [--dry]"
-    echo "       update-container.fish list                # table: LXC / container / version / update"
-    echo "services: npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud"
+    echo "       update-container.fish list"
+    echo "services: "(all_services | string join " ")
 end
 
 function wud_suggest
@@ -50,7 +40,8 @@ function wud_suggest
         return 1
     end
     set -l pass (cat $passfile | string trim)
-    set -l json (curl -s -m 6 -u "admin:$pass" "http://192.168.100.107:3000/api/containers" 2>/dev/null)
+    set -l wudurl (config_wud_url)
+    set -l json (curl -s -m 6 -u "admin:$pass" "$wudurl/api/containers" 2>/dev/null)
     if test -z "$json"
         return 1
     end
@@ -64,20 +55,20 @@ end
 
 function list_all
     # table of every service: LXC (CT) / container / current tag / available / diff kind
-    set -l services npm adguard unbound postgres odoo-web odoo-db soon-nginx soon-mongo soon-certbot wud
     set -l passfile /root/.wud-admin-pass
     if not test -f $passfile
         echo "[error] /root/.wud-admin-pass missing — create it to enable the list (needs WUD API)"
         return 1
     end
     set -l pass (cat $passfile | string trim)
-    set -l json (curl -s -m 6 -u "admin:$pass" "http://192.168.100.107:3000/api/containers" 2>/dev/null)
+    set -l wudurl (config_wud_url)
+    set -l json (curl -s -m 6 -u "admin:$pass" "$wudurl/api/containers" 2>/dev/null)
     if test -z "$json"
-        echo "[error] WUD unreachable"
+        echo "[error] WUD unreachable at $wudurl"
         return 1
     end
     printf "%-13s %-4s %-20s %-20s %-20s %s\n" SERVICE CT CONTAINER CURRENT AVAILABLE KIND
-    for svc in $services
+    for svc in (all_services)
         set -l fields (service_info $svc | string split " ")
         set -l ct $fields[1]
         set -l cname $fields[4]

@@ -216,38 +216,81 @@ Manual single-container image update for the Docker-in-LXC fleet: it bumps the
 pinned image tag in a compose file and recreates the container. It is the manual
 counterpart to a report-only WUD setup (no auto-updates on a production host).
 
+The script is portable across hosts: the WUD URL and the service registry live in
+`/etc/update-container.conf` (one file per host), so the same script works on
+fribourg (192.168.100.x) and dell7760 (192.168.97.x).
+
 ```sh
-fish update-container.fish <service>              # show the current pinned tag
-fish update-container.fish <service> <new-tag>    # bump + recreate
+fish update-container.fish list                 # table: LXC / container / version / update
+fish update-container.fish <service>            # show current tag + available update
+fish update-container.fish <service> <new-tag>  # bump + recreate
 fish update-container.fish <service> <new-tag> --dry
-fish update-container.fish --version              # print the version (also -V)
-fish update-container.fish --help                 # print usage (also -h)
+fish update-container.fish --version            # print the version (also -V)
+fish update-container.fish --help               # print usage (also -h)
 # e.g.
-fish update-container.fish npm                  # show npm's current tag
-fish update-container.fish npm 2.17.0           # update npm to 2.17.0
+fish update-container.fish list               # list every service
+fish update-container.fish npm                # show npm's current tag
+fish update-container.fish npm 2.17.0         # update npm to 2.17.0
 ```
 
-What it does, in order:
+### Setup on a new host
 
-1. looks up the service in the built-in registry (CT id, compose path, image repo);
+To make the script work on a PVE host, three things are needed (fish, awk and
+python3 must be present on the host):
+
+1. **Install the script:**
+
+   ```sh
+   install -m 755 scripts/update-container.fish /usr/local/bin/update-container.fish
+   ```
+
+2. **Create the config** `/etc/update-container.conf` — a `WUD_URL` line plus one
+   line per service:
+
+   ```
+   # comment lines are ignored
+   WUD_URL http://<WUD-IP>:3000
+   # service  ct  compose-path  repo  container-name
+   npm 195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager nginx-app-1
+   adguard 253 /opt/adguardhome/docker-compose.yml adguard/adguardhome adguardhome
+   ```
+
+   Fields: `service` (short name you type), `ct` (LXC VMID), `compose-path` (full
+   path inside the CT to the compose file), `repo` (image repo without the tag),
+   `container-name` (the Docker container name WUD tracks — `docker ps --format '{{.Names}}'`).
+
+   A template lives at `scripts/update-container.conf.example`. Only registry-based
+   services go here: locally-built images (dated `YYYY.MM.DD-<sig8>` tags) and the
+   `hawser` agent are excluded.
+
+3. **Create the WUD password file** (needed only for `list` and the update hint):
+
+   ```sh
+   printf '%s\n' '<WUD admin password>' > /root/.wud-admin-pass
+   chmod 600 /root/.wud-admin-pass
+   ```
+
+   The password is the `WUD_AUTH_ADMIN_PASSWORD` value from the WUD compose
+   (`/opt/wud/docker-compose.yml` inside the WUD CT).
+
+Then verify with `update-container.fish list`.
+
+### What it does, in order:
+
+1. looks up the service in `/etc/update-container.conf` (CT id, compose path, image repo, container name);
 2. with no `<new-tag>`, prints the current image line, plus the newer tag WUD
-   suggests (read via `/root/.wud-admin-pass`), and the exact command to run;
+   suggests — `minor`/`patch` show the copy-paste command, `major` and `prerelease`
+   show a warning instead (a major jump such as mongo 7→9 cannot be done in one step);
 3. backs up the compose file (`.bak-<timestamp>`);
 4. pre-pulls `repo:new-tag` to validate it exists — aborts leaving the compose untouched if the pull fails;
-5. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
+5. replaces the tag on the `image:` line only (anchored, so service keys are never touched);
 6. runs `docker compose config -q && docker compose up -d`;
 7. prints the container status.
 
-Services: `npm`, `adguard`, `unbound`, `postgres`, `odoo-web`, `odoo-db`,
-`soon-nginx`, `soon-mongo`, `soon-certbot`, `wud`.
-
 Notes:
 
-- **site-specific**: the registry maps service names to CT IDs and compose paths of
-  the fribourg host (192.168.100.x) — adapt before reuse on another host;
-- the "available update" hint queries WUD at http://192.168.100.107:3000 using the
-  admin password from `/root/.wud-admin-pass` (chmod 600) — create that file to enable
-  the suggestion; without it the script only prints the current tag;
+- **per-host config**: `/etc/update-container.conf` is host-specific and is NOT tracked
+  in this repo — adapt the template in `scripts/update-container.conf.example`;
 - rollback = `cp compose.yaml.bak-* compose.yaml && docker compose up -d`;
 - `--dry` prints what would happen without touching anything.
 
