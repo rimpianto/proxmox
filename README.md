@@ -22,6 +22,7 @@ before running it on your own host.
 | [`net-inventory.fish`](scripts/net-inventory.fish) | Read-only inventory of NICs: driver, PCI, speed, media, MTU, master/bridge, IPs, PCIe link | **no** |
 | [`nvme-inventory.fish`](scripts/nvme-inventory.fish) | Read-only inventory of NVMe drives: model, capacity, PCIe link/gen, SMART health, endurance, who uses them | **no** |
 | [`proxmox_audit-ver01A.fish`](scripts/proxmox_audit-ver01A.fish) | Interactive menu for sessions, SSH/GUI login history, ports, processes, cron and rootkit scanners | no configuration changes; scanners may write logs |
+| [`update-container.fish`](scripts/update-container.fish) | Bump a pinned Docker image tag and recreate one container (manual-update companion to a report-only WUD) | yes (recreate) |
 
 Requirements: `root` (except `net-inventory.fish`), `fish`, and the usual Proxmox CLI
 tools (`pct`, `qm`, `vzdump`, `pvesh`) already present on a PVE host.
@@ -206,6 +207,39 @@ need manual review and are not proof of compromise.
 
 See the [complete audit-menu manual](docs/proxmox-audit.md) for every entry,
 terminal behaviour, remote `tmux` usage, output and limitations.
+
+---
+
+## update-container.fish
+
+Manual single-container image update for the Docker-in-LXC fleet: it bumps the
+pinned image tag in a compose file and recreates the container. It is the manual
+counterpart to a report-only WUD setup (no auto-updates on a production host).
+
+```sh
+fish update-container.fish <service> <new-tag> [--dry]
+# e.g.
+fish update-container.fish npm 2.17.0
+fish update-container.fish adguard v0.108.0 --dry
+```
+
+What it does, in order:
+
+1. looks up the service in the built-in registry (CT id, compose path, image repo);
+2. backs up the compose file (`.bak-<timestamp>`);
+3. replaces `repo:TAG` with `repo:new-tag` (handles quoted and unquoted lines);
+4. runs `docker compose config -q && docker compose pull && docker compose up -d`;
+5. prints the container status.
+
+Services: `npm`, `adguard`, `unbound`, `postgres`, `odoo-web`, `odoo-db`,
+`soon-nginx`, `soon-mongo`, `soon-certbot`, `wud`.
+
+Notes:
+
+- **site-specific**: the registry maps service names to CT IDs and compose paths of
+  the fribourg host (192.168.100.x) — adapt before reuse on another host;
+- rollback = `cp compose.yaml.bak-* compose.yaml && docker compose up -d`;
+- `--dry` prints what would happen without touching anything.
 
 ---
 
