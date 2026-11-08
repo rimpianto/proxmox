@@ -10,7 +10,7 @@
 #   update-container.fish <service> <new-tag>  # bump + recreate
 #   update-container.fish <service> <new-tag> --dry
 
-set -g VERSION "1.6.0"
+set -g VERSION "1.6.1"
 set -g CONFIG /etc/update-container.conf
 
 function config_wud_url
@@ -67,15 +67,16 @@ function list_all
         echo "[error] WUD unreachable at $wudurl"
         return 1
     end
-    printf "%-13s %-4s %-20s %-20s %-20s %s\n" SERVICE CT CONTAINER CURRENT AVAILABLE KIND
+    set -l rows
     for svc in (all_services)
         set -l fields (service_info $svc | string split " ")
         set -l ct $fields[1]
         set -l cname $fields[4]
         set -l row (printf "%s" "$json" | env CNAME="$cname" python3 -c 'import sys,json,os; d=json.load(sys.stdin); n=os.environ["CNAME"]; r=[c for c in d if c.get("name")==n]; c=r[0] if r else None; cur=c["image"]["tag"]["value"] if c else "?"; up=bool(c and c.get("updateAvailable") and c.get("result") and c["result"].get("tag")); avail=(c["result"]["tag"] if up else "-"); kind=((c.get("updateKind") or {}).get("semverDiff") if up else "-"); print(cur+"|"+avail+"|"+kind)' 2>/dev/null)
         set -l parts (string split "|" $row)
-        printf "%-13s %-4s %-20s %-20s %-20s %s\n" $svc $ct $cname $parts[1] $parts[2] $parts[3]
+        set -a rows "$svc|$ct|$cname|$parts[1]|$parts[2]|$parts[3]"
     end
+    printf "%s\n" $rows | python3 -c 'import sys; h=["SERVICE","CT","CONTAINER","CURRENT","AVAILABLE","KIND"]; rows=[l.split("|") for l in sys.stdin.read().splitlines() if l.strip()]; a=[h]+rows; w=[max(len(r[i]) for r in a) for i in range(6)]; [print("  ".join(r[i].ljust(w[i]) for i in range(6))) for r in a]'
 end
 
 if test "$argv[1]" = "--version"; or test "$argv[1]" = "-V"
