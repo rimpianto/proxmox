@@ -221,6 +221,7 @@ fish update-container.fish <service>              # show the current pinned tag
 fish update-container.fish <service> <new-tag>    # bump + recreate
 fish update-container.fish <service> <new-tag> --dry
 fish update-container.fish --version              # print the version (also -V)
+fish update-container.fish --help                 # print usage (also -h)
 # e.g.
 fish update-container.fish npm                  # show npm's current tag
 fish update-container.fish npm 2.17.0           # update npm to 2.17.0
