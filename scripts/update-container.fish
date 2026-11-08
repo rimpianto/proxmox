@@ -6,6 +6,8 @@
 #   fish update-container.fish <service> <new-tag>    # bump + recreate
 #   fish update-container.fish <service> <new-tag> --dry   # dry run
 
+set -g VERSION "1.4.0"
+
 function service_info
     switch $argv[1]
         case npm
@@ -58,6 +60,11 @@ function wud_suggest
     return 0
 end
 
+if test "$argv[1]" = "--version"; or test "$argv[1]" = "-V"
+    echo "update-container.fish v$VERSION"
+    exit 0
+end
+
 if test (count $argv) -lt 1
     usage
     exit 2
@@ -86,7 +93,7 @@ set -l ct $fields[1]
 set -l compose $fields[2]
 set -l repo $fields[3]
 
-echo "[service] $svc  ct=$ct  repo=$repo"
+echo "[update-container.fish v$VERSION] $svc  ct=$ct  repo=$repo"
 
 # status query: no new tag given, show current tag + WUD's suggestion
 if test -z "$newtag"
