@@ -6,7 +6,7 @@
 #   fish update-container.fish <service> <new-tag>    # bump + recreate
 #   fish update-container.fish <service> <new-tag> --dry   # dry run
 
-set -g VERSION "1.4.3"
+set -g VERSION "1.4.4"
 
 function service_info
     # echo "CT compose-path repo container-name"
@@ -142,8 +142,8 @@ if not pct exec $ct -- docker pull "$repo:$newtag"
     exit 1
 end
 
-# 3. bump the tag (replace repo:TAG with repo:newtag, keeping any quotes)
-if not pct exec $ct -- sed -i "s|$repo:[^ '\"]*|$repo:$newtag|" "$compose"
+# 3. bump the tag (anchor to image: so it never hits the service key)
+if not pct exec $ct -- sed -i "s|\(image:.*$repo:\)[^ '\"]*|\1$newtag|" "$compose"
     echo "[error] sed failed" >&2
     exit 1
 end
