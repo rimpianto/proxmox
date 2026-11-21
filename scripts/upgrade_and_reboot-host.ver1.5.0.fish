@@ -13,8 +13,8 @@ if set -q _flag_help
     echo "Options:"
     echo "  -d, --dry-run         Simulate upgrade, check reboot conditions, and preview"
     echo "                        shutdown targets and email without making changes"
-    echo "  -m, --mail-to EMAIL   Recipient email address (default: 'noc@rimpianto.com',"
-    echo "                        routed via Proxmox VE Datacenter -> Notifications)"
+    echo "  -m, --mail-to EMAIL   Recipient email address (default: 'root', sent via"
+    echo "                        proxmox-mail-forward -> Datacenter Notifications)"
     echo "  -h, --help            Show this help message and exit"
     exit 0
 end
@@ -24,7 +24,7 @@ if set -q _flag_dry_run
     set dry_run 1
 end
 
-# Default recipient 'root' triggers Proxmox VE's built-in notification forwarding (/etc/aliases -> proxmox-mail-forward)
+# Default recipient 'root' is sent directly via /usr/libexec/proxmox-mail-forward (Proxmox VE Datacenter -> Notifications)
 set -l mail_to "root"
 if set -q _flag_mail_to
     set mail_to "$_flag_mail_to"
