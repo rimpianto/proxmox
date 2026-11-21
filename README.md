@@ -81,7 +81,7 @@ Command line (via `argparse`):
 | Flag | Meaning |
 |---|---|
 | `-d`, `--dry-run` | Simulate: show kernel diagnostics, shutdown targets and email preview; nothing is changed |
-| `-m`, `--mail-to EMAIL` | Report recipient (code default: `noc@rimpianto.com`) |
+| `-m`, `--mail-to EMAIL` | Report recipient (code default: `root`) |
 | `-h`, `--help` | Usage |
 
 What it does, in order:
@@ -100,21 +100,25 @@ What it does, in order:
    - the running kernel (`uname -r`) differs from the newest installed
      `/boot/vmlinuz-*` (compared with `sort -V`).
 4. **Controlled shutdown, then reboot** (only when a reboot is required):
-   `pct shutdown` for every running LXC — **excluding CT ID `205`** on
-   purpose (site-specific exception) — and `qm shutdown` for every running
-   QEMU VM; then wait for all of them to go down, up to **180 s** (60 polls
-   × 3 s). On timeout the automatic reboot is **aborted** to prevent data
-   corruption and an error email is sent. On success the host mails the
-   report and executes `reboot`.
+   the **pre-reboot report email is sent first** (the log it carries lists
+   the exact shutdown targets, so the mail arrives before the host goes
+   down), then `pct shutdown` for every running LXC — **excluding CT ID
+   `205`** on purpose (site-specific exception) — and `qm shutdown` for
+   every running QEMU VM; then wait for all of them to go down, up to
+   **180 s** (60 polls × 3 s). On timeout the automatic reboot is
+   **aborted** to prevent data corruption and an error email is sent. When
+   all guests are down the host executes `reboot` (no second email).
 5. **Logging and reporting.** Every run is appended (timestamped, via `tee`)
    to `/var/log/pve-auto-upgrade.log`, with a fallback to
    `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
-   `--dry-run`). At the end the run log is mailed through
-   `/usr/sbin/sendmail -t` with subject prefix `[<hostname>] Proxmox
-   Upgrade:` (success, reboot, or error variants); recipient
-   `noc@rimpianto.com` by default — chosen so Proxmox VE's built-in
-   Datacenter → Notifications forwarding picks it up — overridable with
-   `-m`/`--mail-to`.
+   `--dry-run`). At the end the run log is mailed with CRLF (`\r\n`) line
+   endings (strict SMTP servers such as Haraka reject bare line-feeds with
+   `451`) and subject prefix `[<hostname>] Proxmox Upgrade:` (success,
+   reboot, or error variants). The default recipient `root` is piped
+   **directly** into `/usr/libexec/proxmox-mail-forward` — Proxmox VE's
+   built-in forwarder, delivering to the targets configured under
+   Datacenter → Notifications without a local MTA hop; a custom recipient
+   (`-m`/`--mail-to`) goes through `sendmail -t` instead.
 
 v1.5.0 replaces v1.3.0 (removed from the repo). Compared to 1.3.0 it adds
 `--dry-run`, the two extra reboot checks (`needrestart`, kernel comparison),
@@ -165,7 +169,9 @@ Day-to-day operation (all commands as root, in fish):
 ```fish
 /root/proxmox/scripts/upgrade_and_reboot-host.fish -d                 # simulate, change nothing
 /root/proxmox/scripts/upgrade_and_reboot-host.fish -m noc@example.com # manual run, custom recipient
-# trigger the timer job now and follow the progress live (Ctrl+C detaches, the job keeps running)
+# trigger a REAL run now (full-upgrade + possible reboot — not a simulation) and follow the log live;
+# --no-block avoids the synchronous "D-Bus connection terminated while waiting for jobs" error when
+# core packages (libc6/dbus/systemd) trigger a daemon-reexec; Ctrl+C exits the tail only, the job keeps running
 systemctl start --no-block pve-auto-upgrade.service; and tail -f /var/log/pve-auto-upgrade.log
 systemctl list-timers pve-auto-upgrade.timer                          # next scheduled run
 tail -n 50 /var/log/pve-auto-upgrade.log                              # last run log
@@ -274,9 +280,11 @@ fish scripts/update-container.fish --help               # usage (also -h, --vers
 - Several scripts **shut guests down** and pve-auto-upgrade can **reboot the
   host** (unattended, daily at 06:00 once installed): run them from the
   console or an out-of-band path, and only after a clean `-d` dry run.
-- The CT `205` exclusion and the `noc@rimpianto.com` recipient are
-  site-specific — edit `upgrade_and_reboot-host.ver1.5.0.fish` if your
-  environment differs.
+- The CT `205` exclusion and the `root` mail routing (direct pipe into
+  `/usr/libexec/proxmox-mail-forward`, plus the Datacenter → Notifications
+  targets) are site-specific — edit
+  `upgrade_and_reboot-host.ver1.5.0.fish` and the notification targets if
+  your environment differs.
 - `pve_rename` and `stop_all` assume a standalone node; read the pre-flight
   checks. Backups go to the default storage — check free space first.
 - No credentials are stored in this repository.

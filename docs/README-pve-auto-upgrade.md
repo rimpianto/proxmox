@@ -25,9 +25,14 @@ Summary of record for all scripts: root [README.md](../README.md).
 - **Simulation mode (`--dry-run` / `-d`):** prints the kernel diagnostics,
   the guests that would be stopped and an email preview, without making any
   change.
-- **End-of-run email notification:** the run log is mailed via
-  `/usr/sbin/sendmail -t` (default recipient: `noc@rimpianto.com`,
-  customizable with `-m` / `--mail-to`).
+- **End-of-run email notification:** the run log is mailed with CRLF
+  (`\r\n`) line endings. With the default recipient `root` the message is
+  piped **directly** into `/usr/libexec/proxmox-mail-forward` (Proxmox VE's
+  built-in forwarder — no local MTA hop, no `451 Bare line-feed` rejections
+  from strict SMTP servers); with a custom recipient (`-m` / `--mail-to`) it
+  goes through `sendmail -t`, still CRLF-formatted. On the reboot path the
+  report is sent **before** the LXC/VM shutdown starts, so the mail reaches
+  you even while the host goes down.
 - **Logging:** all output is appended (timestamped) to
   `/var/log/pve-auto-upgrade.log`, with a fallback to
   `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
@@ -103,11 +108,23 @@ proxmox/
 - **Immediate manual execution via systemd, following the progress live:**
   the engine appends every timestamped step to
   `/var/log/pve-auto-upgrade.log` as it runs (`tee -a`), so the recommended
-  one-liner starts the job non-blockingly and tails the log (Ctrl+C detaches
-  from the log only — the job keeps running):
+  one-liner starts the job non-blockingly and tails the log:
   ```fish
   systemctl start --no-block pve-auto-upgrade.service; and tail -f /var/log/pve-auto-upgrade.log
   ```
+  Why `--no-block`: when `apt full-upgrade` updates core packages (`libc6`,
+  `dbus`, `systemd`), systemd performs a `daemon-reexec`; a *blocking*
+  `systemctl start` waits synchronously for the job across that re-exec and
+  typically dies with
+  `D-Bus connection terminated while waiting for jobs`. With `--no-block`
+  the command returns immediately and the job survives; `tail -f` follows
+  the progress live, and `Ctrl+C` exits the tail **only** — it does not
+  interrupt the running job.
+
+  > **Warning:** starting the service performs a **real** run —
+  > `apt full-upgrade`, guest shutdowns and, when required, an actual host
+  > `reboot`. This is not a simulation: use `-d` / `--dry-run` (previous
+  > bullet) when you only want to preview.
 - **Check the next scheduled run:**
   ```fish
   systemctl list-timers pve-auto-upgrade.timer
@@ -128,19 +145,45 @@ proxmox/
 
 ## Email notification
 
-The body is the timestamped log of the run, sent via `/usr/sbin/sendmail -t`
-from `Proxmox Auto-Upgrade <root@<hostname>>`. Subjects (literal strings in
-the code, prefixed with `[<hostname>] Proxmox Upgrade:`):
+The body is the timestamped log of the run, sent from
+`Proxmox Auto-Upgrade <root@<hostname>>` with an RFC-822 `Date:` header.
+Subjects (literal strings in the code, prefixed with `[<hostname>] Proxmox
+Upgrade:`):
 
 | Outcome | Subject suffix |
 |---|---|
 | Success, no reboot needed | `Completato (nessun reboot)` |
-| Reboot started | `Reboot avviato (<newest kernel>)` |
+| Reboot started (sent **before** the guest shutdown starts) | `Reboot avviato (<newest kernel>)` |
 | `apt update` / `apt full-upgrade` failed | `ERRORE durante apt update` / `ERRORE durante apt full-upgrade` |
 | Guest shutdown timeout (reboot aborted) | `ERRORE timeout spegnimento guest` |
 
-The default recipient `noc@rimpianto.com` is deliberate: it triggers
-Proxmox VE's built-in notification forwarding (Datacenter → Notifications).
+On the reboot path the report email is sent **before** any LXC container or
+QEMU VM is stopped — its body already contains the shutdown targets logged
+just before — then the guests are shut down and, once all are stopped, the
+host sleeps 3 s and executes `reboot` (no second email). Sending it first
+guarantees delivery even on nodes that host the site's DNS resolver or mail
+server inside guests: those services are still up when the message leaves
+the host.
+
+### CRLF formatting and delivery path
+
+Every message (headers *and* body) is formatted with CRLF (`\r\n`) line
+endings: headers are emitted with `printf ...\r\n` and the body is
+normalized with `sed 's/\r$//; s/$/\r/'`. Bare line-feeds are rejected with
+`451 Bare line-feed` by strict SMTP servers (e.g. Haraka), so the CRLF
+formatting makes the report survive direct submission.
+
+The delivery path depends on the recipient:
+
+| Recipient | Transport | Notes |
+|---|---|---|
+| `root` (default) | piped **directly** into `/usr/libexec/proxmox-mail-forward` | Proxmox VE's built-in forwarder: delivers to the targets configured in **Datacenter → Notifications**, bypassing the local MTA and its aliases |
+| custom address (`-m` / `--mail-to`) | `/usr/sbin/sendmail -t` | still CRLF-formatted; goes through the local Postfix queue |
+
+The default recipient `root` is deliberate: routing through
+`proxmox-mail-forward` feeds Proxmox VE's built-in notification system
+(Datacenter → Notifications) with no dependency on postfix being healthy
+during the upgrade window.
 
 ---
 
