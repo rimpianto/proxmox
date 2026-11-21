@@ -13,8 +13,8 @@ if set -q _flag_help
     echo "Options:"
     echo "  -d, --dry-run         Simulate upgrade, check reboot conditions, and preview"
     echo "                        shutdown targets and email without making changes"
-    echo "  -m, --mail-to EMAIL   Recipient email address (default: 'root', routed via"
-    echo "                        Proxmox VE Datacenter -> Notifications)"
+    echo "  -m, --mail-to EMAIL   Recipient email address (default: 'noc@rimpianto.com',"
+    echo "                        routed via Proxmox VE Datacenter -> Notifications)"
     echo "  -h, --help            Show this help message and exit"
     exit 0
 end

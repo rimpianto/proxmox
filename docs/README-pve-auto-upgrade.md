@@ -138,10 +138,6 @@ the code, prefixed with `[<hostname>] Proxmox Upgrade:`):
 The default recipient `noc@rimpianto.com` is deliberate: it triggers
 Proxmox VE's built-in notification forwarding (Datacenter → Notifications).
 
-> **Known cosmetic issue:** the `--help` text of the main script states
-> "default: 'root'" while the actual code default is `noc@rimpianto.com`.
-> The behavior of the code is what this document describes.
-
 ---
 
 ## Safety notes
