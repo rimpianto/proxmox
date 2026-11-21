@@ -1,66 +1,155 @@
 # Proxmox VE Automated Upgrade & Conditional Reboot (`v1.5.0`)
 
-Automazione completa dell'aggiornamento dei nodi Proxmox VE (`apt update`, `apt full-upgrade`, `apt autoremove`) con rilevamento intelligente del riavvio necessario, spegnimento controllato di container LXC e VM, logging su file e notifica email finale.
+Complete automation of Proxmox VE node updates (`apt update`,
+`apt full-upgrade`, `apt autoremove`) with intelligent detection of a
+required reboot, controlled shutdown of LXC containers and VMs, file logging
+and a final email notification.
 
-## Funzionalità principali
+Summary of record for all scripts: root [README.md](../README.md).
 
-- **Aggiornamento non interattivo sicuro:** imposta `DEBIAN_FRONTEND=noninteractive` e `NEEDRESTART_MODE=l` per evitare interruzioni o riavvii prematuri dei servizi Proxmox durante `apt full-upgrade`.
-- **Triplo controllo per il reboot:**
-  1. Verifica la presenza di `/var/run/reboot-required`.
-  2. Interroga `needrestart -b` (`NEEDRESTART-KSTA` / `NEEDRESTART-UCSTA`).
-  3. Confronta il kernel in esecuzione (`uname -r`) con l'ultimo kernel installato in `/boot/vmlinuz-*`.
-- **Spegnimento controllato dei guest:** arresta in modo pulito tutti i container LXC attivi (**escluso l'ID `205`**) e tutte le VM QEMU, attendendo fino a 180 secondi prima di procedere al `reboot` (in caso di timeout blocca il riavvio e invia un'email di errore).
-- **Modalità simulazione (`--dry-run` / `-d`):** mostra la diagnostica del kernel, i guest che verrebbero spenti e l'anteprima dell'email senza apportare alcuna modifica.
-- **Notifica email a fine esecuzione:** invia il log dell'esecuzione tramite `/usr/sbin/sendmail` (default: `noc@rimpianto.com`, personalizzabile con `-m` / `--mail-to`).
+## Key features
+
+- **Safe non-interactive upgrade:** sets `DEBIAN_FRONTEND=noninteractive` and
+  `NEEDRESTART_MODE=l` to avoid interruptions or premature restarts of
+  Proxmox services during `apt full-upgrade` (which also runs with Dpkg
+  `--force-confdef --force-confold`, keeping existing config files).
+- **Triple check for the reboot:**
+  1. presence of `/var/run/reboot-required`;
+  2. `needrestart -b` output (`NEEDRESTART-KSTA` / `NEEDRESTART-UCSTA` = 2/3);
+  3. running kernel (`uname -r`) vs the newest installed `/boot/vmlinuz-*`
+     (ordered with `sort -V`).
+- **Controlled guest shutdown:** cleanly stops all running LXC containers
+  (**excluding ID `205`**, site-specific exception) and all running QEMU VMs,
+  waiting up to 180 seconds (60 polls × 3 s) before the `reboot`; on timeout
+  the reboot is blocked to prevent data corruption and an error email is sent.
+- **Simulation mode (`--dry-run` / `-d`):** prints the kernel diagnostics,
+  the guests that would be stopped and an email preview, without making any
+  change.
+- **End-of-run email notification:** the run log is mailed via
+  `/usr/sbin/sendmail -t` (default recipient: `noc@rimpianto.com`,
+  customizable with `-m` / `--mail-to`).
+- **Logging:** all output is appended (timestamped) to
+  `/var/log/pve-auto-upgrade.log`, with a fallback to
+  `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
+  dry-run). Rotation is installed by the installer (see below).
 
 ---
 
-## Struttura dei file
+## File layout
 
 ```text
 proxmox/
+├── .gitignore                                      # ignores the symlink below
 ├── docs/
-│   └── README-pve-auto-upgrade.md              # Questa documentazione
+│   └── README-pve-auto-upgrade.md                  # This documentation
 └── scripts/
-    ├── upgrade_and_reboot-host.ver1.5.0.fish   # Script principale
-    ├── upgrade_and_reboot-host.fish            # Symlink all'ultima versione (creato dall'installer)
-    └── install-pve-auto-upgrade.fish           # Installer automatico (symlink, systemd, timer, logrotate)
+    ├── upgrade_and_reboot-host.ver1.5.0.fish       # Main script (tracked in Git)
+    ├── upgrade_and_reboot-host.fish                # Symlink to the latest version — generated locally, NOT tracked
+    └── install-pve-auto-upgrade.fish               # Automatic installer (symlink, systemd, timer, logrotate)
 ```
+
+> **Note on the symlink:** `scripts/upgrade_and_reboot-host.fish` is created
+> locally by the installer, which points it at the newest
+> `upgrade_and_reboot-host.ver*.fish` found in `scripts/` (`sort -V`). The
+> systemd service executes the symlink (never a versioned name), so the
+> symlink is a generated artifact: it is excluded from Git tracking by the
+> root `.gitignore`. To upgrade the engine, commit a new
+> `upgrade_and_reboot-host.verX.Y.Z.fish` and re-run the installer — it will
+> re-point the symlink.
 
 ---
 
-## Installazione su un nuovo nodo Proxmox VE (shell `fish`)
+## Installation on a new Proxmox VE node (shell `fish`)
 
-1. **Verifica che la shell `fish` sia installata e clona il repository:**
+1. **Make sure `fish` is installed, then clone the repository:**
    ```fish
    which fish; or begin; apt update; and apt install -y fish; end
-   git clone [https://github.com/rimpianto/proxmox.git](https://github.com/rimpianto/proxmox.git) /root/proxmox
+   git clone https://github.com/rimpianto/proxmox.git /root/proxmox
    ```
 
-2. **Esegui lo script di installazione:**
+2. **Run the installer script** (as root — it checks `id -u` and refuses
+   otherwise; it is idempotent and safe to re-run):
    ```fish
    /root/proxmox/scripts/install-pve-auto-upgrade.fish
    ```
-   Lo script crea il symlink `upgrade_and_reboot-host.fish`, genera `/etc/systemd/system/pve-auto-upgrade.service`, `/etc/systemd/system/pve-auto-upgrade.timer` (schedulato **ogni giorno alle 06:00** con `RandomizedDelaySec=10m` e `Persistent=false`) e `/etc/logrotate.d/pve-auto-upgrade`, abilita il timer ed esegue subito un `--dry-run` di verifica.
+   The script creates the symlink `upgrade_and_reboot-host.fish`, generates
+   `/etc/systemd/system/pve-auto-upgrade.service`,
+   `/etc/systemd/system/pve-auto-upgrade.timer` (scheduled **every day at
+   06:00** with `RandomizedDelaySec=10m` and `Persistent=false`) and
+   `/etc/logrotate.d/pve-auto-upgrade` (monthly, rotate 6, compressed),
+   enables and starts the timer, and immediately runs a `--dry-run`
+   verification.
+
+## systemd units (generated by the installer)
+
+| Unit | Key settings |
+|---|---|
+| `pve-auto-upgrade.service` | `Type=oneshot`, `User=root`, `After=network-online.target pve-cluster.service postfix.service`, `ExecStart=/usr/bin/fish <repo>/scripts/upgrade_and_reboot-host.fish` |
+| `pve-auto-upgrade.timer` | `OnCalendar=*-*-* 06:00:00`, `RandomizedDelaySec=10m`, `Persistent=false` (no catch-up run after downtime), `WantedBy=timers.target` |
+| `/etc/logrotate.d/pve-auto-upgrade` | `/var/log/pve-auto-upgrade.log`: `monthly`, `rotate 6`, `compress`, `delaycompress`, `missingok`, `notifempty`, `create 0640 root adm` |
 
 ---
 
-## Gestione e comandi utili
+## Management and useful commands
 
-- **Simulazione senza modifiche:**
+- **Simulation without changes:**
   ```fish
   /root/proxmox/scripts/upgrade_and_reboot-host.fish -d
   ```
-- **Esecuzione manuale immediata tramite systemd:**
+- **Manual run with a custom recipient:**
+  ```fish
+  /root/proxmox/scripts/upgrade_and_reboot-host.fish -m noc@example.com
+  ```
+- **Immediate manual execution via systemd:**
   ```fish
   systemctl start --no-block pve-auto-upgrade.service
   ```
-- **Verifica prossima esecuzione programmata:**
+- **Check the next scheduled run:**
   ```fish
   systemctl list-timers pve-auto-upgrade.timer
   ```
-- **Controllo log e coda email:**
+- **Pause the automation / resume it:**
+  ```fish
+  systemctl disable --now pve-auto-upgrade.timer
+  systemctl enable --now pve-auto-upgrade.timer
+  ```
+- **Check the log and the mail queue:**
   ```fish
   cat /var/log/pve-auto-upgrade.log
+  journalctl -u pve-auto-upgrade.service
   postqueue -p
   ```
+
+---
+
+## Email notification
+
+The body is the timestamped log of the run, sent via `/usr/sbin/sendmail -t`
+from `Proxmox Auto-Upgrade <root@<hostname>>`. Subjects (literal strings in
+the code, prefixed with `[<hostname>] Proxmox Upgrade:`):
+
+| Outcome | Subject suffix |
+|---|---|
+| Success, no reboot needed | `Completato (nessun reboot)` |
+| Reboot started | `Reboot avviato (<newest kernel>)` |
+| `apt update` / `apt full-upgrade` failed | `ERRORE durante apt update` / `ERRORE durante apt full-upgrade` |
+| Guest shutdown timeout (reboot aborted) | `ERRORE timeout spegnimento guest` |
+
+The default recipient `noc@rimpianto.com` is deliberate: it triggers
+Proxmox VE's built-in notification forwarding (Datacenter → Notifications).
+
+> **Known cosmetic issue:** the `--help` text of the main script states
+> "default: 'root'" while the actual code default is `noc@rimpianto.com`.
+> The behavior of the code is what this document describes.
+
+---
+
+## Safety notes
+
+- Once the timer is enabled the host updates itself unattended daily at
+  06:00 **and may reboot**: install only after a clean `--dry-run`, and make
+  sure you have out-of-band access.
+- The CT `205` exclusion is site-specific: edit the two `awk '$2 == "running"
+  && $1 != "205"'` filters in the main script if your environment differs.
+- On shutdown timeout the script aborts the reboot on purpose — investigate
+  the stuck guest reported in the email and log before re-running.

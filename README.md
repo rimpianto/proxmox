@@ -1,312 +1,285 @@
-# Proxmox VE helper scripts
+# Proxmox VE helper scripts & automation
 
-Small, opinionated **fish** scripts used to operate and audit standalone
-Proxmox VE hosts: rename a node, stop or upgrade a host safely, inspect
-sessions and access logs, and take network and NVMe inventories.
+Scripts and automation used to operate Proxmox VE nodes: automatic host
+upgrades with conditional reboot (the **pve-auto-upgrade** system below),
+safe guest shutdown, LXC package updates, standalone node renaming, read-only
+network and NVMe inventories, an interactive security/audit menu, and pinned
+Docker container updates (WUD companion).
+
+Tested on Proxmox VE 9.x (Debian 13) with `fish` 3.7+/4.x. Written for the
+author's homelab — paths, CT IDs and mail recipients are site-specific; read
+each script before running it on your own host.
+
+All command examples in this repository use **fish** syntax.
 
 **New here?** See [Getting started](docs/getting-started.md) for cloning,
 updating a local checkout and contributing new files.
 
-Tested on Proxmox VE 9.x (Debian 13) with `fish` 3.7+/4.x. They are written for the
-author's homelab (paths, CT IDs and storage names may need adapting) — read the script
-before running it on your own host.
+## Repository layout
 
-## Scripts
+```text
+proxmox/
+├── .gitignore                                  # ignores the generated symlink below
+├── LICENSE                                     # GNU GPL v3.0
+├── README.md                                   # this document
+├── docs/
+│   ├── README-pve-auto-upgrade.md              # pve-auto-upgrade architecture & ops reference
+│   ├── getting-started.md                      # clone / update / contribute guide
+│   └── proxmox-audit.md                        # full manual for proxmox_audit-ver01A.fish
+└── scripts/
+    ├── install-pve-auto-upgrade.fish           # idempotent installer (symlink + systemd + logrotate)
+    ├── upgrade_and_reboot-host.ver1.5.0.fish   # upgrade engine with conditional reboot
+    ├── update-all-lxcs.fish                    # apt upgrade inside every running LXC
+    ├── update-all-lxcs.sh                      # same logic, bash variant
+    ├── stop_all.fish                           # vzdump backup, then shut down all guests
+    ├── stop_all_noBackup.fish                  # shut down all guests, no backup
+    ├── pve_rename-ver.2.1.fish                 # rename a standalone node (v2.1)
+    ├── net-inventory.fish                      # read-only NIC inventory
+    ├── nvme-inventory.fish                     # read-only NVMe inventory
+    ├── proxmox_audit-ver01A.fish               # interactive audit menu (v0.1A)
+    ├── update-container.fish                   # bump a pinned Docker tag + recreate (v1.6.1)
+    └── update-container.conf.example           # template for /etc/update-container.conf
+```
+
+`scripts/upgrade_and_reboot-host.fish` is intentionally **not in Git**: it is
+a symlink generated locally by the installer and excluded via `.gitignore`
+(see the pve-auto-upgrade section).
+
+## Script index
 
 | Script | Purpose | Changes the system |
 |---|---|---|
-| [`pve_rename-ver.2.1.fish`](scripts/pve_rename-ver.2.1.fish) | Rename a **standalone** PVE node (hostname, `/etc/hosts`, node directory in `/etc/pve`) with pre-flight backups | yes |
+| [`upgrade_and_reboot-host.ver1.5.0.fish`](scripts/upgrade_and_reboot-host.ver1.5.0.fish) | `apt update` + `full-upgrade` + `autoremove`; 3-level reboot detection; controlled guest shutdown; email report; conditional `reboot` | yes (packages, shutdowns, possible reboot) |
+| [`install-pve-auto-upgrade.fish`](scripts/install-pve-auto-upgrade.fish) | Idempotent installer for the script above: symlink, systemd service + daily timer, logrotate, dry-run verification | yes (system units, logrotate) |
+| [`update-all-lxcs.fish`](scripts/update-all-lxcs.fish) | `apt-get update` / `full-upgrade` / `autoremove` / `clean` inside every **running** LXC via `pct exec` | yes (packages inside CTs) |
+| [`update-all-lxcs.sh`](scripts/update-all-lxcs.sh) | Same logic as a bash script | yes (packages inside CTs) |
 | [`stop_all.fish`](scripts/stop_all.fish) | `vzdump` snapshot backup of every guest, then graceful shutdown of all LXCs and VMs, then wait | yes (backup + shutdown) |
 | [`stop_all_noBackup.fish`](scripts/stop_all_noBackup.fish) | Same shutdown sequence **without** the backup | yes (shutdown) |
-| [`upgrade_and_reboot-host.ver1.3.0.fish`](scripts/upgrade_and_reboot-host.ver1.3.0.fish) | `apt update` + `full-upgrade` + `autoremove`; if a reboot is required, shut the guests down and reboot | yes |
+| [`pve_rename-ver.2.1.fish`](scripts/pve_rename-ver.2.1.fish) | Rename a **standalone** PVE node (hostname, `/etc/hosts`, node directory in `/etc/pve`) with pre-flight backups | yes |
 | [`net-inventory.fish`](scripts/net-inventory.fish) | Read-only inventory of NICs: driver, PCI, speed, media, MTU, master/bridge, IPs, PCIe link | **no** |
 | [`nvme-inventory.fish`](scripts/nvme-inventory.fish) | Read-only inventory of NVMe drives: model, capacity, PCIe link/gen, SMART health, endurance, who uses them | **no** |
 | [`proxmox_audit-ver01A.fish`](scripts/proxmox_audit-ver01A.fish) | Interactive menu for sessions, SSH/GUI login history, ports, processes, cron and rootkit scanners | no configuration changes; scanners may write logs |
 | [`update-container.fish`](scripts/update-container.fish) | Bump a pinned Docker image tag and recreate one container (manual-update companion to a report-only WUD) | yes (recreate) |
+| [`update-container.conf.example`](scripts/update-container.conf.example) | Template for the per-host `/etc/update-container.conf` registry (not executable) | — |
 
-Requirements: `root` (except `net-inventory.fish`), `fish`, and the usual Proxmox CLI
-tools (`pct`, `qm`, `vzdump`, `pvesh`) already present on a PVE host.
-
-```sh
-apt install fish          # if it is not installed yet
-chmod +x scripts/*.fish   # the repository already ships the executable bit
-cp scripts/*.fish /usr/local/bin/   # optional: make them available in PATH
-```
+Requirements: `root` (except the inventory scripts), `fish`, and the usual
+Proxmox CLI tools (`pct`, `qm`, `vzdump`, `pvesh`) already present on a PVE
+host.
 
 ---
 
-## pve_rename-ver.2.1.fish
+## The automatic upgrade system (pve-auto-upgrade)
 
-Renames a Proxmox node **without losing guests**: it copies the node configuration
-directory, updates the hostname and `/etc/hosts`, and leaves the old
-`/etc/pve/nodes/<old_name>` directory in place (never deleted).
+Architecture details and the full operations reference live in
+[`docs/README-pve-auto-upgrade.md`](docs/README-pve-auto-upgrade.md).
+This section is the summary of record for both scripts.
 
-```sh
-./pve_rename-ver.2.1.fish <old-name> <new-name>
-# e.g.
-./pve_rename-ver.2.1.fish pve-old pve-lab
-```
+### `upgrade_and_reboot-host.ver1.5.0.fish` — the upgrade engine
+
+Command line (via `argparse`):
+
+| Flag | Meaning |
+|---|---|
+| `-d`, `--dry-run` | Simulate: show kernel diagnostics, shutdown targets and email preview; nothing is changed |
+| `-m`, `--mail-to EMAIL` | Report recipient (code default: `noc@rimpianto.com`) |
+| `-h`, `--help` | Usage |
 
 What it does, in order:
 
-1. requires root, `fish`, and **exactly two arguments**;
-2. validates the new name against RFC 1123 and refuses identical names;
-3. **refuses to run on a cluster** (checks for Corosync state): standalone nodes only;
-4. takes pre-flight backups (tarball + raw copy) of `/etc/pve`, `config.db`,
-   `/etc/hosts`, `/etc/hostname`, `/etc/network/interfaces`;
-5. copies `/etc/pve/nodes/<old>/` to `/etc/pve/nodes/<new>/` (qemu-server, lxc, …);
-6. updates `/etc/hosts`, `/etc/hostname`, `hostnamectl`;
-7. prints the final view of registered containers/VMs and the manual cleanup command
-   for the old node directory (`rm -rf /etc/pve/nodes/<old_name>`), which it does
-   **not** run for you.
+1. **Non-interactive upgrade.** Exports `DEBIAN_FRONTEND=noninteractive` and
+   `NEEDRESTART_MODE=l`, then runs `apt update` and
+   `apt -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade -y`
+   (existing config files are kept: no conffile prompts, no `.dpkg-new`
+   surprises). A failure in either step aborts the run and mails an error
+   report.
+2. **Cleanup.** `apt autoremove -y` (old kernels included).
+3. **3-level reboot detection** — any one of these triggers the reboot path:
+   - `/var/run/reboot-required` exists;
+   - `needrestart -b` reports `NEEDRESTART-KSTA`/`NEEDRESTART-UCSTA` pending
+     (value 2 or 3: kernel or microcode update);
+   - the running kernel (`uname -r`) differs from the newest installed
+     `/boot/vmlinuz-*` (compared with `sort -V`).
+4. **Controlled shutdown, then reboot** (only when a reboot is required):
+   `pct shutdown` for every running LXC — **excluding CT ID `205`** on
+   purpose (site-specific exception) — and `qm shutdown` for every running
+   QEMU VM; then wait for all of them to go down, up to **180 s** (60 polls
+   × 3 s). On timeout the automatic reboot is **aborted** to prevent data
+   corruption and an error email is sent. On success the host mails the
+   report and executes `reboot`.
+5. **Logging and reporting.** Every run is appended (timestamped, via `tee`)
+   to `/var/log/pve-auto-upgrade.log`, with a fallback to
+   `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
+   `--dry-run`). At the end the run log is mailed through
+   `/usr/sbin/sendmail -t` with subject prefix `[<hostname>] Proxmox
+   Upgrade:` (success, reboot, or error variants); recipient
+   `noc@rimpianto.com` by default — chosen so Proxmox VE's built-in
+   Datacenter → Notifications forwarding picks it up — overridable with
+   `-m`/`--mail-to`.
 
-Notes:
+v1.5.0 replaces v1.3.0 (removed from the repo). Compared to 1.3.0 it adds
+`--dry-run`, the two extra reboot checks (`needrestart`, kernel comparison),
+file logging, email reporting, and a **working** wait loop: the old LXC
+condition was ineffective (only VMs were actually awaited), and 180 s
+aborts instead of waiting forever.
 
-- run it from the host console or an SSH session that does not depend on the node name;
-- after the rename, check `/etc/pve/nodes/<new>/` and the PVE web UI before removing
-  the old directory;
-- if the host is in a cluster, this script refuses: use the supported cluster
-  procedure instead.
+### `install-pve-auto-upgrade.fish` — the idempotent installer
+
+Must run as root, from any checkout of this repo. Re-running it is safe: it
+recreates everything it manages.
+
+1. Picks the newest `scripts/upgrade_and_reboot-host.ver*.fish` in its own
+   directory (`sort -V | tail -n 1`), `chmod +x` on it, and creates the
+   local symlink `scripts/upgrade_and_reboot-host.fish` → versioned file.
+   The symlink is a **generated artifact**: systemd points at it (not at a
+   versioned name), it is excluded from Git tracking by the root
+   [`.gitignore`](.gitignore), and bumping the engine = drop the new
+   `ver*.fish` in `scripts/` and re-run the installer.
+2. Writes `/etc/systemd/system/pve-auto-upgrade.service` — `Type=oneshot`,
+   `User=root`, `After=network-online.target pve-cluster.service
+   postfix.service`, `ExecStart=/usr/bin/fish <repo>/scripts/upgrade_and_reboot-host.fish`.
+3. Writes `/etc/systemd/system/pve-auto-upgrade.timer` — **daily at 06:00**
+   (`OnCalendar=*-*-* 06:00:00`) with `RandomizedDelaySec=10m` and
+   `Persistent=false` (no catch-up run after downtime), `WantedBy=timers.target`.
+4. Writes `/etc/logrotate.d/pve-auto-upgrade` — `/var/log/pve-auto-upgrade.log`
+   monthly, rotate 6, compress + delaycompress, `create 0640 root adm`.
+5. `systemctl daemon-reload`, `systemctl enable --now pve-auto-upgrade.timer`,
+   prints the next scheduled run (`systemctl list-timers`) and finishes with
+   a live `--dry-run` verification of the engine.
+
+### Quick start on a new Proxmox VE node
+
+```fish
+# 1. make sure fish is installed (Debian package name is `fish`)
+which fish; or begin; apt update; and apt install -y fish; end
+
+# 2. clone the repository (git too, if missing)
+which git; or begin; apt update; and apt install -y git; end
+git clone https://github.com/rimpianto/proxmox.git /root/proxmox
+
+# 3. install the automation (root; ends with a built-in --dry-run check)
+/root/proxmox/scripts/install-pve-auto-upgrade.fish
+```
+
+Day-to-day operation (all commands as root, in fish):
+
+```fish
+/root/proxmox/scripts/upgrade_and_reboot-host.fish -d                 # simulate, change nothing
+/root/proxmox/scripts/upgrade_and_reboot-host.fish -m noc@example.com # manual run, custom recipient
+systemctl start --no-block pve-auto-upgrade.service                   # trigger the timer job now
+systemctl list-timers pve-auto-upgrade.timer                          # next scheduled run
+tail -n 50 /var/log/pve-auto-upgrade.log                              # last run log
+postqueue -p                                                          # postfix mail queue
+```
 
 ---
 
-## stop_all.fish
+## Other scripts in detail
 
-Backs up every guest with `vzdump --all --mode snapshot --compress zstd`, then shuts
-down all running LXCs (`pct shutdown`) and VMs (`qm shutdown`), waits until nothing is
-running anymore and tells you the host is ready for a reboot.
+### update-all-lxcs.fish
 
-```sh
-./stop_all.fish
-# optional: choose the backup storage by editing the vzdump line, e.g.
-#   vzdump --all --mode snapshot --compress zstd --storage local-zfs
+Loops over `pct list` (running only) and runs, inside each container,
+`DEBIAN_FRONTEND=noninteractive` + `apt-get update` + `apt-get full-upgrade -y`
+(`--force-confdef --force-confold`) + `apt-get autoremove -y` + `apt-get clean`,
+then prints a per-CT OK/ERROR summary. `update-all-lxcs.sh` is the bash twin.
+
+```fish
+/root/proxmox/scripts/update-all-lxcs.fish
 ```
 
-Notes:
+### stop_all.fish / stop_all_noBackup.fish
 
-- `vzdump --all` uses the **default** storage and can take a long time: make sure there
-  is free space before running it;
-- snapshot mode leaves the guests running during the backup, then the shutdown starts;
-- the wait loop uses `pct list`/`qm list`: if a guest is stuck, the script waits
-  forever (Ctrl+C and stop the guest by hand).
+Both shut down every running guest gracefully (`pct shutdown`, `qm shutdown`)
+and wait until nothing is running. `stop_all.fish` first backs everything up
+with `vzdump --all --mode snapshot --compress zstd` (default storage — check
+free space; add `--storage <name>` on the vzdump line to redirect).
+`stop_all_noBackup.fish` has the backup lines commented out. The wait loop
+has no timeout: a stuck guest waits forever (Ctrl+C and stop it by hand).
 
-## stop_all_noBackup.fish
+### pve_rename-ver.2.1.fish
 
-Identical shutdown sequence **without** the `vzdump` step (the backup lines are
-commented out). Use it when you already have a recent backup and just want everything
-down before a reboot or a hardware change.
+Renames a **standalone** node without losing guests: requires exactly two
+arguments, validates the new name against RFC 1123, **refuses to run on a
+cluster**, takes pre-flight backups (`/etc/pve`, `config.db`, `/etc/hosts`,
+`/etc/hostname`, `/etc/network/interfaces`), copies
+`/etc/pve/nodes/<old>/` → `/etc/pve/nodes/<new>/`, updates hostname and
+hosts, and prints (but does not run) the cleanup command for the old node
+directory. Run it from the console or an out-of-band session.
 
----
-
-## upgrade_and_reboot-host.ver1.3.0.fish
-
-Updates the host and reboots it only if needed:
-
-1. `export DEBIAN_FRONTEND=noninteractive`, then `apt update`;
-2. `apt full-upgrade -y` with `--force-confdef --force-confold` (keeps existing config
-   files: no conffile prompts, no `.dpkg-new` surprises);
-3. `apt autoremove -y` (old kernels included);
-4. if `/var/run/reboot-required` exists: graceful shutdown of all guests, wait, then
-   `reboot`; otherwise it prints "No reboot is necessary".
-
-**Site-specific detail:** the LXC loop skips container **205** on purpose. Change it if
-your environment differs.
-
-Known issue: the LXC wait condition is ineffective —
-`while pct list | grep -q running | grep -v 205` feeds a `grep -q` (no output) into
-`grep -v`, so the loop only really waits for the **VMs**. LXCs are asked to shut down
-but not awaited before the reboot. Fix by writing the condition as two separate checks.
-
----
-
-## net-inventory.fish
-
-Read-only network report: **it changes nothing** and works as a normal user.
-
-```sh
-net-inventory                    # full inventory
-net-inventory --up               # only interfaces with carrier/link
-net-inventory -d nic3            # detail for one interface
-net-inventory --no-color         # no ANSI colours
+```fish
+./scripts/pve_rename-ver.2.1.fish pve-old pve-lab
 ```
 
-Sections printed:
+### net-inventory.fish (read-only)
 
-| Section | Content |
-|---|---|
-| `PHYSICAL NICS` | name, driver, PCI address, root port, state, current speed, maximum supported speed, media, MTU, MAC, master (bridge/bond), udev `.link` file |
-| `PCIe LINK` | `LnkCap` (slot capability) → `LnkSta` (negotiated), with `⚠ down` when the device is in a narrower slot than it could use |
-| `VIRTUAL INTERFACES` | bridge/bond/vlan/veth/tun/dummy, state, MTU, master, members |
-| `IP ADDRESSES` | IPv4 + global IPv6 per interface |
-| `BRIDGE — PORT STATE` | STP state and per-port state (forwarding, blocking, …) |
-| `VLAN` | VLAN interfaces and their parent |
-| summary | physical NICs with link, bridges, VLANs, interfaces without IP |
-
-Legend: `MAX` is the highest speed declared in *Supported link modes* (or the current
-speed if it is higher); `!` means the negotiated speed exceeds the declared maximum
-(driver lying); `*` means the media was read from the driver debug file because
-`ethtool` hardcodes `PORT_TP` on that driver (r8127); `n/a` means the driver does not
-report media (e.g. `ice` without an SFP module).
-
-`-d/--detail IFACE` adds `ethtool -i` (driver/firmware), supported and advertised link
-modes, SFP diagnostics (`ethtool -m`), error counters and `ip addr`.
-
-## nvme-inventory.fish
-
-Read-only report of every NVMe controller/namespace: **it changes nothing** and works as
-a normal user.
-
-```sh
-nvme-inventory                # table
-nvme-inventory -d nvme1n1     # full detail for one namespace
-nvme-inventory --no-color     # no ANSI colours
+```fish
+net-inventory.fish               # full inventory
+net-inventory.fish --up          # only interfaces with carrier/link (-u)
+net-inventory.fish -d nic3       # detail for one interface (--detail)
+net-inventory.fish --no-color    # no ANSI colours (-n)
 ```
 
-| Column | Content |
-|---|---|
-| `DEVICE` | namespace block device (`nvme0n1`, …) |
-| `MODEL` | model string from the drive's identify data |
-| `SIZE` | namespace capacity |
-| `PCIe` | controller `LnkCap` (capability) → `LnkSta` (negotiated), with generation (`Gen3`, `Gen4`, …) |
-| `HEALTH` | SMART self-assessment (`PASSED` / `FAILED`) |
-| `TEMP` | composite temperature, °C |
-| `USED%` | `Percentage Used` from the NVMe SMART log (endurance) |
-| `USED BY` | `zfs: <pool>`, `mounted <path>`, `<fs> (not mounted)`, `partitions only` or `unused` |
+Sections: physical NICs (driver, PCI, current/max speed, media, MTU, MAC,
+master, `.link` file), PCIe `LnkCap` → `LnkSta` with downgraded-slot
+warnings, virtual interfaces, IP addresses, bridge port/STP state, VLANs,
+summary. Safe for any user; dependencies: `iproute2`, `pciutils`, `ethtool`,
+`udevadm`.
 
-`⚠ speed` / `⚠ width` mean the drive is running below the link it supports — typically a
-Gen4 SSD in a Gen3 slot or a x4 drive in a x2/x1 slot. The summary line counts
-controllers, total capacity, downgraded links and unhealthy drives.
+### nvme-inventory.fish (read-only)
 
-`-d/--detail DEVICE` adds the controller and root port, the serial number, the `lsblk`
-tree, `smartctl -i` and the full SMART health/attributes block (data written, power-on
-hours, unsafe shutdowns, media errors).
-
-Dependencies: `pciutils`, `smartmontools`, `util-linux` (`lsblk`); `zfsutils-linux` for
-the pool mapping (optional).
-
----
-
-## proxmox_audit-ver01A.fish
-
-Interactive Fish menu for routine host security inspection. It groups current
-users and login sessions, successful/failed SSH and Proxmox GUI logins,
-listening ports and established connections, process lookup, root cron files,
-`chkrootkit` and `rkhunter`.
-
-```sh
-apt install -y fish ccze less iproute2 procps chkrootkit rkhunter
-chmod +x scripts/proxmox_audit-ver01A.fish
-./scripts/proxmox_audit-ver01A.fish
+```fish
+nvme-inventory.fish              # table
+nvme-inventory.fish -d nvme1n1   # full detail for one device (--detail)
+nvme-inventory.fish --no-color   # (-n)
 ```
 
-Select entries 1–14 with the keyboard; use `q` to leave a `less` journal view
-or the main menu. The script has no command-line options and requires an
-interactive terminal. It does not intentionally change Proxmox configuration,
-but the rootkit scanners can write their own logs and state. Scanner warnings
-need manual review and are not proof of compromise.
+Per namespace: model, size, PCIe capability vs negotiated link (gen), SMART
+health, temperature, endurance used %, and what consumes it (`zfs`, mount,
+partitions, unused). Dependencies: `pciutils`, `smartmontools`, `util-linux`;
+`zfsutils-linux` optional.
 
-See the [complete audit-menu manual](docs/proxmox-audit.md) for every entry,
-terminal behaviour, remote `tmux` usage, output and limitations.
+### proxmox_audit-ver01A.fish
 
----
+Interactive menu (no command-line options; needs a TTY, normally root):
+current users and sessions, successful/failed SSH and Proxmox GUI logins,
+listening ports and established connections, process lookup, root cron,
+`chkrootkit` and `rkhunter`. Scanner warnings need manual review. Full
+manual: [docs/proxmox-audit.md](docs/proxmox-audit.md).
 
-## update-container.fish
+### update-container.fish (v1.6.1)
 
-Manual single-container image update for the Docker-in-LXC fleet: it bumps the
-pinned image tag in a compose file and recreates the container. It is the manual
-counterpart to a report-only WUD setup (no auto-updates on a production host).
+Manual single-container Docker image update, the counterpart to a
+report-only WUD: bumps the pinned tag in a compose file (inside the target
+LXC) and recreates the container. Portable across hosts via
+`/etc/update-container.conf` (`WUD_URL` plus one line per service:
+`service  ct  compose-path  repo  container-name`) — adapt
+[`scripts/update-container.conf.example`](scripts/update-container.conf.example).
+The WUD lookup (used by `list` and the update hint) reads the admin password
+from `/root/.wud-admin-pass`. It backs up the compose file, pre-pulls the new
+tag to validate it, edits only the `image:` line, and supports `--dry`
+(`list` also accepts the `ls` alias).
 
-The script is portable across hosts: the WUD URL and the service registry live in
-`/etc/update-container.conf` (one file per host), so the same script works on
-fribourg (192.168.100.x) and dell7760 (192.168.97.x).
-
-```sh
-fish update-container.fish list                 # table: LXC / container / version / update
-fish update-container.fish <service>            # show current tag + available update
-fish update-container.fish <service> <new-tag>  # bump + recreate
-fish update-container.fish <service> <new-tag> --dry
-fish update-container.fish --version            # print the version (also -V)
-fish update-container.fish --help               # print usage (also -h)
-# e.g.
-fish update-container.fish list               # list every service
-fish update-container.fish npm                # show npm's current tag
-fish update-container.fish npm 2.17.0         # update npm to 2.17.0
+```fish
+fish scripts/update-container.fish list                 # table: LXC / container / version / update
+fish scripts/update-container.fish <service>            # current tag + WUD suggestion
+fish scripts/update-container.fish <service> <new-tag>  # bump + recreate
+fish scripts/update-container.fish <service> <new-tag> --dry
+fish scripts/update-container.fish --help               # usage (also -h, --version / -V)
 ```
-
-### Setup on a new host
-
-To make the script work on a PVE host, three things are needed (fish, awk and
-python3 must be present on the host):
-
-1. **Install the script:**
-
-   ```sh
-   install -m 755 scripts/update-container.fish /usr/local/bin/update-container.fish
-   ```
-
-2. **Create the config** `/etc/update-container.conf` — a `WUD_URL` line plus one
-   line per service:
-
-   ```
-   # comment lines are ignored
-   WUD_URL http://<WUD-IP>:3000
-   # service  ct  compose-path  repo  container-name
-   npm 195 /var/lib/docker/volumes/hawser_stacks/_data/nginx/compose.yaml jc21/nginx-proxy-manager nginx-app-1
-   adguard 253 /opt/adguardhome/docker-compose.yml adguard/adguardhome adguardhome
-   ```
-
-   Fields: `service` (short name you type), `ct` (LXC VMID), `compose-path` (full
-   path inside the CT to the compose file), `repo` (image repo without the tag),
-   `container-name` (the Docker container name WUD tracks — `docker ps --format '{{.Names}}'`).
-
-   A template lives at `scripts/update-container.conf.example`. Only registry-based
-   services go here: locally-built images (dated `YYYY.MM.DD-<sig8>` tags) and the
-   `hawser` agent are excluded.
-
-3. **Create the WUD password file** (needed only for `list` and the update hint):
-
-   ```sh
-   printf '%s\n' '<WUD admin password>' > /root/.wud-admin-pass
-   chmod 600 /root/.wud-admin-pass
-   ```
-
-   The password is the `WUD_AUTH_ADMIN_PASSWORD` value from the WUD compose
-   (`/opt/wud/docker-compose.yml` inside the WUD CT).
-
-Then verify with `update-container.fish list`.
-
-### What it does, in order:
-
-1. looks up the service in `/etc/update-container.conf` (CT id, compose path, image repo, container name);
-2. with no `<new-tag>`, prints the current image line, plus the newer tag WUD
-   suggests — `minor`/`patch` show the copy-paste command, `major` and `prerelease`
-   show a warning instead (a major jump such as mongo 7→9 cannot be done in one step);
-3. backs up the compose file (`.bak-<timestamp>`);
-4. pre-pulls `repo:new-tag` to validate it exists — aborts leaving the compose untouched if the pull fails;
-5. replaces the tag on the `image:` line only (anchored, so service keys are never touched);
-6. runs `docker compose config -q && docker compose up -d`;
-7. prints the container status.
-
-Notes:
-
-- **per-host config**: `/etc/update-container.conf` is host-specific and is NOT tracked
-  in this repo — adapt the template in `scripts/update-container.conf.example`;
-- rollback = `cp compose.yaml.bak-* compose.yaml && docker compose up -d`;
-- `--dry` prints what would happen without touching anything.
 
 ---
 
 ## Safety notes
 
-- Most of these scripts **shut guests down** and some **reboot the host**: run them from
-  the console or an out-of-band path, not from a session that will drop.
-- `pve_rename` and `stop_all` assume a standalone node; read the pre-flight checks.
-- Backups (`stop_all`, `pve_rename`) are written to the default storage/locations —
-  check free space first.
+- Several scripts **shut guests down** and pve-auto-upgrade can **reboot the
+  host** (unattended, daily at 06:00 once installed): run them from the
+  console or an out-of-band path, and only after a clean `-d` dry run.
+- The CT `205` exclusion and the `noc@rimpianto.com` recipient are
+  site-specific — edit `upgrade_and_reboot-host.ver1.5.0.fish` if your
+  environment differs.
+- `pve_rename` and `stop_all` assume a standalone node; read the pre-flight
+  checks. Backups go to the default storage — check free space first.
 - No credentials are stored in this repository.
 
 ## License
 
-Unless stated otherwise in a script header, the contents are provided as-is for
-personal use, without warranty of any kind. The `net-inventory.fish` script is
-read-only and safe to run anywhere.
+GNU GPL v3.0 — see [LICENSE](LICENSE).
