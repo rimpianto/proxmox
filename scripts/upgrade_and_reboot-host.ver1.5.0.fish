@@ -24,8 +24,8 @@ if set -q _flag_dry_run
     set dry_run 1
 end
 
-# Default recipient 'noc@rimpianto.com' triggers Proxmox VE's built-in notification forwarding
-set -l mail_to "noc@rimpianto.com"
+# Default recipient 'root' triggers Proxmox VE's built-in notification forwarding (/etc/aliases -> proxmox-mail-forward)
+set -l mail_to "root"
 if set -q _flag_mail_to
     set mail_to "$_flag_mail_to"
 end
@@ -174,12 +174,18 @@ function run_upgrade --argument-names dry_run mail_to
         set -l target_vms (qm list | awk '$2 == "running" {print $1}')
 
         if test "$dry_run" -eq 1
-            log_msg "[DRY-RUN] Would shut down LXC containers (excluding 205): "(test (count $target_lxcs) -gt 0; and string join ", " $target_lxcs; or echo "none")
+            log_msg "[DRY-RUN] Would send pre-reboot email, shut down LXC (excluding 205): "(test (count $target_lxcs) -gt 0; and string join ", " $target_lxcs; or echo "none")
             log_msg "[DRY-RUN] Would shut down QEMU VMs: "(test (count $target_vms) -gt 0; and string join ", " $target_vms; or echo "none")
-            log_msg "[DRY-RUN] Would wait up to 180s for guests to stop, send email, and execute 'reboot'."
+            log_msg "[DRY-RUN] Would wait up to 180s for guests to stop and execute 'reboot'."
             send_notification "$mail_to" "[$host] Proxmox Upgrade: Reboot avviato ($latest_kernel)" "$RUN_LOG_FILE" "$dry_run"
             return 0
         end
+
+        log_msg "=== Sending pre-reboot report before stopping guests ==="
+        log_msg "Target LXC containers to stop: "(test (count $target_lxcs) -gt 0; and string join ", " $target_lxcs; or echo "none")
+        log_msg "Target QEMU VMs to stop: "(test (count $target_vms) -gt 0; and string join ", " $target_vms; or echo "none")
+        send_notification "$mail_to" "[$host] Proxmox Upgrade: Reboot avviato ($latest_kernel)" "$RUN_LOG_FILE" "$dry_run"
+        sleep 2
 
         log_msg "=== Starting LXC containers shutdown (excluding 205) ==="
         for vmid in $target_lxcs
@@ -218,9 +224,8 @@ function run_upgrade --argument-names dry_run mail_to
             sleep 3
         end
 
-        log_msg "=== Sending pre-reboot report & rebooting host ==="
-        send_notification "$mail_to" "[$host] Proxmox Upgrade: Reboot avviato ($latest_kernel)" "$RUN_LOG_FILE" "$dry_run"
-        sleep 5
+        log_msg "=== All guests stopped, rebooting host ==="
+        sleep 3
         reboot
     else
         log_msg "No reboot is necessary. Upgrade complete!"
