@@ -165,7 +165,8 @@ Day-to-day operation (all commands as root, in fish):
 ```fish
 /root/proxmox/scripts/upgrade_and_reboot-host.fish -d                 # simulate, change nothing
 /root/proxmox/scripts/upgrade_and_reboot-host.fish -m noc@example.com # manual run, custom recipient
-systemctl start --no-block pve-auto-upgrade.service                   # trigger the timer job now
+# trigger the timer job now and follow the progress live (Ctrl+C detaches, the job keeps running)
+systemctl start --no-block pve-auto-upgrade.service; and tail -f /var/log/pve-auto-upgrade.log
 systemctl list-timers pve-auto-upgrade.timer                          # next scheduled run
 tail -n 50 /var/log/pve-auto-upgrade.log                              # last run log
 postqueue -p                                                          # postfix mail queue

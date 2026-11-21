@@ -100,9 +100,13 @@ proxmox/
   ```fish
   /root/proxmox/scripts/upgrade_and_reboot-host.fish -m noc@example.com
   ```
-- **Immediate manual execution via systemd:**
+- **Immediate manual execution via systemd, following the progress live:**
+  the engine appends every timestamped step to
+  `/var/log/pve-auto-upgrade.log` as it runs (`tee -a`), so the recommended
+  one-liner starts the job non-blockingly and tails the log (Ctrl+C detaches
+  from the log only — the job keeps running):
   ```fish
-  systemctl start --no-block pve-auto-upgrade.service
+  systemctl start --no-block pve-auto-upgrade.service; and tail -f /var/log/pve-auto-upgrade.log
   ```
 - **Check the next scheduled run:**
   ```fish
