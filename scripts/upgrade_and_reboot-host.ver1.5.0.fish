@@ -49,8 +49,40 @@ function log_msg
 end
 
 function send_notification --argument-names recipient subject body_file dry_run
+    set -l pve_forward_bin "/usr/libexec/proxmox-mail-forward"
+    set -l use_pve_forward 0
+    if test "$recipient" = "root"; and test -x "$pve_forward_bin"
+        set use_pve_forward 1
+    end
+
     if test "$dry_run" -eq 1
-        log_msg "[DRY-RUN] Would send email to '$recipient' | Subject: '$subject'"
+        if test $use_pve_forward -eq 1
+            log_msg "[DRY-RUN] Would send email via proxmox-mail-forward (CRLF) | Subject: '$subject'"
+        else
+            log_msg "[DRY-RUN] Would send email to '$recipient' (CRLF) | Subject: '$subject'"
+        end
+        return 0
+    end
+
+    set -l host (hostname)
+    set -l mail_date (date -R)
+
+    if test $use_pve_forward -eq 1
+        begin
+            printf "To: root\r\n"
+            printf "From: Proxmox Auto-Upgrade <root@%s>\r\n" "$host"
+            printf "Date: %s\r\n" "$mail_date"
+            printf "Subject: %s\r\n" "$subject"
+            printf "Content-Type: text/plain; charset=UTF-8\r\n"
+            printf "\r\n"
+            sed 's/\r$//; s/$/\r/' "$body_file"
+        end | $pve_forward_bin
+
+        if test $status -eq 0
+            log_msg "Notification email sent via proxmox-mail-forward."
+        else
+            log_msg "WARNING: Failed to send notification email via proxmox-mail-forward."
+        end
         return 0
     end
 
@@ -60,15 +92,14 @@ function send_notification --argument-names recipient subject body_file dry_run
         return 1
     end
 
-    set -l host (hostname)
-
     begin
-        echo "To: $recipient"
-        echo "From: Proxmox Auto-Upgrade <root@$host>"
-        echo "Subject: $subject"
-        echo "Content-Type: text/plain; charset=UTF-8"
-        echo ""
-        cat "$body_file"
+        printf "To: %s\r\n" "$recipient"
+        printf "From: Proxmox Auto-Upgrade <root@%s>\r\n" "$host"
+        printf "Date: %s\r\n" "$mail_date"
+        printf "Subject: %s\r\n" "$subject"
+        printf "Content-Type: text/plain; charset=UTF-8\r\n"
+        printf "\r\n"
+        sed 's/\r$//; s/$/\r/' "$body_file"
     end | $sendmail_bin -t
 
     if test $status -eq 0
