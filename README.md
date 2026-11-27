@@ -28,7 +28,7 @@ proxmox/
 │   └── proxmox-audit.md                        # full manual for proxmox_audit-ver01A.fish
 └── scripts/
     ├── install-pve-auto-upgrade.fish           # idempotent installer (symlink + systemd + logrotate)
-    ├── upgrade_and_reboot-host.ver1.5.0.fish   # upgrade engine with conditional reboot
+    ├── upgrade_and_reboot-host.ver1.6.1.fish   # upgrade engine with conditional reboot + removal guardrails
     ├── update-all-lxcs.fish                    # apt upgrade inside every running LXC
     ├── update-all-lxcs.sh                      # same logic, bash variant
     ├── stop_all.fish                           # vzdump backup, then shut down all guests
@@ -49,7 +49,7 @@ a symlink generated locally by the installer and excluded via `.gitignore`
 
 | Script | Purpose | Changes the system |
 |---|---|---|
-| [`upgrade_and_reboot-host.ver1.5.0.fish`](scripts/upgrade_and_reboot-host.ver1.5.0.fish) | `apt update` + `full-upgrade` + `autoremove`; 3-level reboot detection; controlled guest shutdown; email report; conditional `reboot` | yes (packages, shutdowns, possible reboot) |
+| [`upgrade_and_reboot-host.ver1.6.1.fish`](scripts/upgrade_and_reboot-host.ver1.6.1.fish) | `apt update` + `full-upgrade` + `autoremove` with pre-flight removal guardrails (`PROTECTED_PKGS_REGEX`); 3-level reboot detection; controlled guest shutdown; email report; conditional `reboot` | yes (packages, shutdowns, possible reboot) |
 | [`install-pve-auto-upgrade.fish`](scripts/install-pve-auto-upgrade.fish) | Idempotent installer for the script above: symlink, systemd service + daily timer, logrotate, dry-run verification | yes (system units, logrotate) |
 | [`update-all-lxcs.fish`](scripts/update-all-lxcs.fish) | `apt-get update` / `full-upgrade` / `autoremove` / `clean` inside every **running** LXC via `pct exec` | yes (packages inside CTs) |
 | [`update-all-lxcs.sh`](scripts/update-all-lxcs.sh) | Same logic as a bash script | yes (packages inside CTs) |
@@ -74,7 +74,7 @@ Architecture details and the full operations reference live in
 [`docs/README-pve-auto-upgrade.md`](docs/README-pve-auto-upgrade.md).
 This section is the summary of record for both scripts.
 
-### `upgrade_and_reboot-host.ver1.5.0.fish` — the upgrade engine
+### `upgrade_and_reboot-host.ver1.6.1.fish` — the upgrade engine
 
 Command line (via `argparse`):
 
@@ -86,13 +86,25 @@ Command line (via `argparse`):
 
 What it does, in order:
 
-1. **Non-interactive upgrade.** Exports `DEBIAN_FRONTEND=noninteractive` and
-   `NEEDRESTART_MODE=l`, then runs `apt update` and
-   `apt -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade -y`
+1. **Non-interactive upgrade with removal guardrail.** Exports
+   `DEBIAN_FRONTEND=noninteractive` and `NEEDRESTART_MODE=l`, runs
+   `apt-get update`, then simulates the transaction with
+   `apt-get -s full-upgrade` and matches every `Remv` package against
+   `PROTECTED_PKGS_REGEX` (`proxmox-ve`, `proxmox-backup-server`,
+   `pve-manager`, `pve-cluster`, `qemu-server`, `pve-container`,
+   `zfsutils-linux`). If a protected package would be removed the run
+   **aborts before changing anything**, mails `BLOCCATO - tentata rimozione
+   di <pkg list>`, and does **not** fall back to a partial `apt upgrade`
+   (not recommended on Proxmox VE). Otherwise it runs
+   `apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade -y`
    (existing config files are kept: no conffile prompts, no `.dpkg-new`
-   surprises). A failure in either step aborts the run and mails an error
+   surprises). A failure in any step aborts the run and mails an error
    report.
-2. **Cleanup.** `apt autoremove -y` (old kernels included).
+2. **Protected cleanup.** Simulates `apt-get -s autoremove` first; if it
+   would remove a protected package the cleanup is skipped (the upgrade
+   itself still succeeds and the report is flagged
+   `Completato (autoremove bloccato)`), otherwise `apt-get autoremove -y`
+   runs (old kernels included).
 3. **3-level reboot detection** — any one of these triggers the reboot path:
    - `/var/run/reboot-required` exists;
    - `needrestart -b` reports `NEEDRESTART-KSTA`/`NEEDRESTART-UCSTA` pending
@@ -111,20 +123,30 @@ What it does, in order:
 5. **Logging and reporting.** Every run is appended (timestamped, via `tee`)
    to `/var/log/pve-auto-upgrade.log`, with a fallback to
    `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
-   `--dry-run`). At the end the run log is mailed with CRLF (`\r\n`) line
-   endings (strict SMTP servers such as Haraka reject bare line-feeds with
-   `451`) and subject prefix `[<hostname>] Proxmox Upgrade:` (success,
-   reboot, or error variants). The default recipient `root` is piped
-   **directly** into `/usr/libexec/proxmox-mail-forward` — Proxmox VE's
-   built-in forwarder, delivering to the targets configured under
-   Datacenter → Notifications without a local MTA hop; a custom recipient
-   (`-m`/`--mail-to`) goes through `sendmail -t` instead.
+   `--dry-run`). The full stdout/stderr of every `apt-get` call (`update`,
+   `full-upgrade`, `autoremove`) is teed into the run log, so the email
+   carries the complete apt output, not just the script's own messages. At
+   the end the run log is mailed with CRLF (`\r\n`) line endings (strict
+   SMTP servers such as Haraka reject bare line-feeds with `451`) and
+   subject prefix `[<hostname>] Proxmox Upgrade:` — `Completato (nessun
+   reboot)`, `Completato (autoremove bloccato)`, `BLOCCATO - tentata
+   rimozione di <pkg list>`, `Reboot avviato (<kernel>)` or the error
+   variants. The default recipient `root` is piped **directly** into
+   `/usr/libexec/proxmox-mail-forward` — Proxmox VE's built-in forwarder,
+   delivering to the targets configured under Datacenter → Notifications
+   without a local MTA hop; a custom recipient (`-m`/`--mail-to`) goes
+   through `sendmail -t` instead.
 
-v1.5.0 replaces v1.3.0 (removed from the repo). Compared to 1.3.0 it adds
-`--dry-run`, the two extra reboot checks (`needrestart`, kernel comparison),
-file logging, email reporting, and a **working** wait loop: the old LXC
-condition was ineffective (only VMs were actually awaited), and 180 s
-aborts instead of waiting forever.
+v1.6.1 replaces v1.5.0 (removed from the repo). Migration is drop-in: the
+command-line flags are unchanged, the `PROTECTED_PKGS_REGEX` guardrail is
+armed by default, and the systemd unit still executes the
+`upgrade_and_reboot-host.fish` symlink — drop the new `ver*.fish` in
+`scripts/` and re-run the installer to re-point it. Compared to v1.5.0,
+v1.6.1 adds the pre-flight removal checks (`apt-get -s full-upgrade` /
+`apt-get -s autoremove`), the safe abort with no `apt upgrade` fallback, the
+`Completato (autoremove bloccato)` and `BLOCCATO - tentata rimozione di
+<pkg list>` subjects, and full `apt-get` output capture in the email reports
+(`run_logged_cmd` with `tee`).
 
 ### `install-pve-auto-upgrade.fish` — the idempotent installer
 
@@ -283,8 +305,12 @@ fish scripts/update-container.fish --help               # usage (also -h, --vers
 - The CT `205` exclusion and the `root` mail routing (direct pipe into
   `/usr/libexec/proxmox-mail-forward`, plus the Datacenter → Notifications
   targets) are site-specific — edit
-  `upgrade_and_reboot-host.ver1.5.0.fish` and the notification targets if
+  `upgrade_and_reboot-host.ver1.6.1.fish` and the notification targets if
   your environment differs.
+- The v1.6.1 guardrail **aborts** (email `BLOCCATO - tentata rimozione di
+  <pkg list>`) whenever `full-upgrade` or `autoremove` would remove a core
+  PVE/PBS package; fix the repositories or the APT pinning and re-run. Never
+  bypass it with a partial `apt upgrade`, which is not supported on Proxmox VE.
 - `pve_rename` and `stop_all` assume a standalone node; read the pre-flight
   checks. Backups go to the default storage — check free space first.
 - No credentials are stored in this repository.

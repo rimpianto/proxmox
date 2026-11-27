@@ -1,9 +1,10 @@
 #!/usr/bin/env fish
 #
 # Proxmox Host Upgrade & Reboot Script
-# Version: 1.5.0
-# Description: Automates apt update/full-upgrade and autoremove with file logging,
-#              --dry-run simulation, and end-of-run email notifications via sendmail.
+# Version: 1.6.1
+# Description: Automates apt update & full-upgrade (Proxmox best practice) with
+#              pre-flight removal guardrails (aborts safely if core PVE/PBS packages
+#              would be removed), file logging, --dry-run, and email alerts.
 
 argparse 'd/dry-run' 'm/mail-to=' 'h/help' -- $argv; or exit 1
 
@@ -11,7 +12,7 @@ if set -q _flag_help
     echo "Usage: "(status filename)" [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -d, --dry-run         Simulate upgrade, check reboot conditions, and preview"
+    echo "  -d, --dry-run         Simulate full-upgrade, check reboot conditions, and preview"
     echo "                        shutdown targets and email without making changes"
     echo "  -m, --mail-to EMAIL   Recipient email address (default: 'root', sent via"
     echo "                        proxmox-mail-forward -> Datacenter Notifications)"
@@ -30,6 +31,9 @@ if set -q _flag_mail_to
     set mail_to "$_flag_mail_to"
 end
 
+# Core packages that MUST NEVER be removed automatically (triggers immediate safe abort)
+set -gx PROTECTED_PKGS_REGEX '^(proxmox-ve|proxmox-backup-server|pve-manager|pve-cluster|qemu-server|pve-container|zfsutils-linux)$'
+
 # Logging setup (falls back to /tmp if invoked as non-root during dry-run)
 set -gx LOG_FILE "/var/log/pve-auto-upgrade.log"
 if not touch "$LOG_FILE" 2>/dev/null
@@ -45,6 +49,16 @@ function log_msg
     echo "$line"
     if set -q RUN_LOG_FILE; and test -f "$RUN_LOG_FILE"
         echo "$line" >> "$RUN_LOG_FILE"
+    end
+end
+
+function run_logged_cmd
+    if set -q RUN_LOG_FILE; and test -f "$RUN_LOG_FILE"
+        $argv 2>&1 | tee -a "$RUN_LOG_FILE"
+        return $pipestatus[1]
+    else
+        $argv
+        return $status
     end
 end
 
@@ -111,41 +125,81 @@ end
 
 function run_upgrade --argument-names dry_run mail_to
     set -l host (hostname)
+    set -l autoremove_blocked 0
 
     if test "$dry_run" -eq 1
-        log_msg "=== Proxmox Upgrade & Reboot Script v1.5.0 [DRY-RUN MODE] ==="
+        log_msg "=== Proxmox Upgrade & Reboot Script v1.6.1 [DRY-RUN MODE] ==="
         log_msg "Simulation active: no packages will be modified and no guests/host will be stopped."
     else
-        log_msg "=== Proxmox Upgrade & Reboot Script v1.5.0 ==="
+        log_msg "=== Proxmox Upgrade & Reboot Script v1.6.1 ==="
     end
 
-    # 1. APT Update & Full-Upgrade
-    log_msg "=== Step 1: Updating Proxmox ==="
+    # 1. APT Update & Protected Full-Upgrade (Proxmox VE Standard)
+    log_msg "=== Step 1: Updating Proxmox (full-upgrade) ==="
     if test "$dry_run" -eq 1
-        log_msg "[DRY-RUN] Skipping 'apt update' and 'apt full-upgrade -y'."
+        log_msg "[DRY-RUN] Simulating 'apt-get -s full-upgrade' to check for protected package removals..."
+        set -l sim_removals (apt-get -s full-upgrade 2>/dev/null | awk '/^Remv / {print $2}')
+        if test (count $sim_removals) -gt 0
+            log_msg "[DRY-RUN] Simulated full-upgrade removals: "(string join ", " $sim_removals)
+        else
+            log_msg "[DRY-RUN] Simulated full-upgrade removals: none"
+        end
     else
         set -gx DEBIAN_FRONTEND noninteractive
         set -gx NEEDRESTART_MODE l
 
-        apt update; or begin
-            log_msg "ERROR: 'apt update' failed. Aborting."
+        run_logged_cmd apt-get update; or begin
+            log_msg "ERROR: 'apt-get update' failed. Aborting."
             send_notification "$mail_to" "[$host] Proxmox Upgrade: ERRORE durante apt update" "$RUN_LOG_FILE" "$dry_run"
             return 1
         end
 
-        apt -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade -y; or begin
-            log_msg "ERROR: 'apt full-upgrade' failed. Aborting."
+        # Pre-flight check: inspect packages that full-upgrade plans to remove
+        set -l planned_removals (apt-get -s full-upgrade 2>/dev/null | awk '/^Remv / {print $2}')
+        set -l blocked_removals
+        for pkg in $planned_removals
+            if string match -rq "$PROTECTED_PKGS_REGEX" -- "$pkg"
+                set -a blocked_removals "$pkg"
+            end
+        end
+
+        if test (count $blocked_removals) -gt 0
+            log_msg "CRITICAL WARNING: 'apt-get full-upgrade' attempted to remove protected package(s): "(string join ", " $blocked_removals)
+            log_msg "Aborting upgrade completely (no partial 'apt upgrade' will be run on Proxmox VE). Manual intervention required."
+            send_notification "$mail_to" "[$host] Proxmox Upgrade: BLOCCATO - tentata rimozione di "(string join ", " $blocked_removals) "$RUN_LOG_FILE" "$dry_run"
+            return 1
+        end
+
+        if test (count $planned_removals) -gt 0
+            log_msg "Non-critical packages to be replaced/removed by full-upgrade: "(string join ", " $planned_removals)
+        end
+
+        run_logged_cmd apt-get -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade -y; or begin
+            log_msg "ERROR: 'apt-get full-upgrade' failed. Aborting."
             send_notification "$mail_to" "[$host] Proxmox Upgrade: ERRORE durante apt full-upgrade" "$RUN_LOG_FILE" "$dry_run"
             return 1
         end
     end
 
-    # 2. Cleanup
+    # 2. Protected Cleanup
     log_msg "=== Step 2: Cleaning up unused packages ==="
     if test "$dry_run" -eq 1
-        log_msg "[DRY-RUN] Skipping 'apt autoremove -y'."
+        log_msg "[DRY-RUN] Skipping 'apt-get autoremove -y'."
     else
-        apt autoremove -y
+        set -l auto_removals (apt-get -s autoremove 2>/dev/null | awk '/^Remv / {print $2}')
+        set -l blocked_auto
+        for pkg in $auto_removals
+            if string match -rq "$PROTECTED_PKGS_REGEX" -- "$pkg"
+                set -a blocked_auto "$pkg"
+            end
+        end
+
+        if test (count $blocked_auto) -gt 0
+            set autoremove_blocked 1
+            log_msg "WARNING: Skipping 'apt-get autoremove' because it attempted to remove protected package(s): "(string join ", " $blocked_auto)
+        else
+            run_logged_cmd apt-get autoremove -y
+        end
     end
 
     # 3. Reboot Detection
@@ -259,8 +313,13 @@ function run_upgrade --argument-names dry_run mail_to
         sleep 3
         reboot
     else
-        log_msg "No reboot is necessary. Upgrade complete!"
-        send_notification "$mail_to" "[$host] Proxmox Upgrade: Completato (nessun reboot)" "$RUN_LOG_FILE" "$dry_run"
+        if test $autoremove_blocked -eq 1
+            log_msg "Full-upgrade succeeded, but autoremove was skipped to protect core packages."
+            send_notification "$mail_to" "[$host] Proxmox Upgrade: Completato (autoremove bloccato)" "$RUN_LOG_FILE" "$dry_run"
+        else
+            log_msg "No reboot is necessary. Upgrade complete!"
+            send_notification "$mail_to" "[$host] Proxmox Upgrade: Completato (nessun reboot)" "$RUN_LOG_FILE" "$dry_run"
+        end
     end
 
     return 0

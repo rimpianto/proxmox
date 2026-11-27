@@ -1,9 +1,10 @@
-# Proxmox VE Automated Upgrade & Conditional Reboot (`v1.5.0`)
+# Proxmox VE Automated Upgrade & Conditional Reboot (`v1.6.1`)
 
 Complete automation of Proxmox VE node updates (`apt update`,
 `apt full-upgrade`, `apt autoremove`) with intelligent detection of a
 required reboot, controlled shutdown of LXC containers and VMs, file logging
-and a final email notification.
+and a final email notification. Since v1.6.1 a pre-flight guardrail aborts
+the run if a core PVE/PBS package would be removed.
 
 Summary of record for all scripts: root [README.md](../README.md).
 
@@ -13,6 +14,18 @@ Summary of record for all scripts: root [README.md](../README.md).
   `NEEDRESTART_MODE=l` to avoid interruptions or premature restarts of
   Proxmox services during `apt full-upgrade` (which also runs with Dpkg
   `--force-confdef --force-confold`, keeping existing config files).
+- **Pre-flight removal guardrails:** after `apt-get update` the script
+  simulates the transaction with `apt-get -s full-upgrade`, parses the
+  `Remv` lines and matches every package name against
+  `PROTECTED_PKGS_REGEX`
+  (`^(proxmox-ve|proxmox-backup-server|pve-manager|pve-cluster|qemu-server|pve-container|zfsutils-linux)$`).
+  If any protected package would be removed the run **aborts before
+  `apt-get full-upgrade`** and mails `BLOCCATO - tentata rimozione di
+  <pkg list>`; there is **no fallback to a partial `apt upgrade`**, which
+  is not recommended on Proxmox VE. The cleanup step is guarded the same
+  way with `apt-get -s autoremove`: when `autoremove` would drop a
+  protected package it is skipped, the upgrade still completes, and the
+  report subject becomes `Completato (autoremove bloccato)`.
 - **Triple check for the reboot:**
   1. presence of `/var/run/reboot-required`;
   2. `needrestart -b` output (`NEEDRESTART-KSTA` / `NEEDRESTART-UCSTA` = 2/3);
@@ -22,7 +35,8 @@ Summary of record for all scripts: root [README.md](../README.md).
   (**excluding ID `205`**, site-specific exception) and all running QEMU VMs,
   waiting up to 180 seconds (60 polls × 3 s) before the `reboot`; on timeout
   the reboot is blocked to prevent data corruption and an error email is sent.
-- **Simulation mode (`--dry-run` / `-d`):** prints the kernel diagnostics,
+- **Simulation mode (`--dry-run` / `-d`):** prints the packages the
+  simulated `apt-get -s full-upgrade` would remove, the kernel diagnostics,
   the guests that would be stopped and an email preview, without making any
   change.
 - **End-of-run email notification:** the run log is mailed with CRLF
@@ -36,7 +50,10 @@ Summary of record for all scripts: root [README.md](../README.md).
 - **Logging:** all output is appended (timestamped) to
   `/var/log/pve-auto-upgrade.log`, with a fallback to
   `/tmp/pve-auto-upgrade.log` when `/var/log` is not writable (non-root
-  dry-run). Rotation is installed by the installer (see below).
+  dry-run). The complete stdout/stderr of `apt-get update`, `full-upgrade`
+  and `autoremove` is captured with `tee` into the run log, so the email
+  report carries the full apt output. Rotation is installed by the
+  installer (see below).
 
 ---
 
@@ -48,7 +65,7 @@ proxmox/
 ├── docs/
 │   └── README-pve-auto-upgrade.md                  # This documentation
 └── scripts/
-    ├── upgrade_and_reboot-host.ver1.5.0.fish       # Main script (tracked in Git)
+    ├── upgrade_and_reboot-host.ver1.6.1.fish       # Main script (tracked in Git)
     ├── upgrade_and_reboot-host.fish                # Symlink to the latest version — generated locally, NOT tracked
     └── install-pve-auto-upgrade.fish               # Automatic installer (symlink, systemd, timer, logrotate)
 ```
@@ -153,6 +170,8 @@ Upgrade:`):
 | Outcome | Subject suffix |
 |---|---|
 | Success, no reboot needed | `Completato (nessun reboot)` |
+| Success, `autoremove` skipped to protect core packages | `Completato (autoremove bloccato)` |
+| Protected package removal detected — upgrade aborted before `full-upgrade` | `BLOCCATO - tentata rimozione di <pkg list>` |
 | Reboot started (sent **before** the guest shutdown starts) | `Reboot avviato (<newest kernel>)` |
 | `apt update` / `apt full-upgrade` failed | `ERRORE durante apt update` / `ERRORE durante apt full-upgrade` |
 | Guest shutdown timeout (reboot aborted) | `ERRORE timeout spegnimento guest` |
@@ -194,5 +213,13 @@ during the upgrade window.
   sure you have out-of-band access.
 - The CT `205` exclusion is site-specific: edit the two `awk '$2 == "running"
   && $1 != "205"'` filters in the main script if your environment differs.
+- **Mixed PVE + PBS nodes:** a node that also runs Proxmox Backup Server can
+  legitimately see `apt-get full-upgrade` propose removing
+  `proxmox-backup-server` (repository mismatch, broken pinning or an
+  incompatible `proxmox-ve` transition). v1.6.1 treats that as fatal: the
+  run stops **before any package is installed or removed**, no partial
+  `apt upgrade` is attempted, and the email names the package(s). Fix
+  `/etc/apt/sources.list*` and the pinning, then re-run — a half-upgraded
+  PVE/PBS node is exactly what this guardrail prevents.
 - On shutdown timeout the script aborts the reboot on purpose — investigate
   the stuck guest reported in the email and log before re-running.
